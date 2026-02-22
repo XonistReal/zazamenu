@@ -22,7 +22,7 @@
 --    local ui = require("naska")
 -- -------------------------------------------------------------
 
-local ui = (function()
+local ui = loadstring(game:HttpGet("https://raw.githubusercontent.com/edutuu9/mycutelittlerankauilib/refs/heads/main/naska.lua"))()
 
 
 local rgb = Color3.fromRGB
