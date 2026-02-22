@@ -1,5 +1,5 @@
 -- ============================================================
--- ZAZA MENU v1.3  |  Matcha executor
+-- ZAZA MENU v1.3  |  Matcha LuaVM Script
 -- Features: Auto Clicker | Anti-AFK | Fly | Custom ESP
 -- Toggle UI: F2  (rebindable in Options)
 -- Fly: W/A/S/D | Space = up | LShift/LCtrl = down
