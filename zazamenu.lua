@@ -1183,7 +1183,7 @@ end)
 -- ============================================================
 --  CREATE WINDOW
 -- ============================================================
-local lib = ui:create("Matcha Tool", {theme="gamesense", size=Vector2.new(600,420)})
+local lib = ui:create("ZazaMenu", {theme="gamesense", size=Vector2.new(600,420)})
 
 local tabClicker = lib:tab("auto clicker")
 local tabAFK     = lib:tab("anti-afk")
