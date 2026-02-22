@@ -375,7 +375,7 @@ do
             container  = create("Square",{Filled=true, Color=self.colors.base, ZIndex=2000, Visible=false}),
             outline    = create("Square",{Filled=false, Color=self.colors.crust, ZIndex=1999, Visible=false}),
             accent_bar = create("Square",{Filled=true, Color=self.colors.accent, ZIndex=2001, Visible=false}),
-            label      = create("Text",{Text="naska.ui | @"..plr.Name, Color=self.colors.text, Size=17.5, ZIndex=2002, Visible=false})
+            label      = create("Text",{Text="zazamenu | @"..plr.Name, Color=self.colors.text, Size=17.5, ZIndex=2002, Visible=false})
         }
 
         self._dcache = {main, main_outline, mantle, text, gradient, gradient_out, resize_handle}
