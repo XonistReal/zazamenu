@@ -1,10 +1,18 @@
 -- ============================================================
--- ZAZA MENU v1.1  |  Matcha executor
+-- ZAZA MENU v1.1.7  |  Matcha executor
 -- Features: Auto Clicker | Anti-AFK | Fly | Custom ESP
 -- UI Library: naska.ui (embedded)
 -- Toggle UI: F2  (rebindable in the Options tab)
 -- Fly controls: W/A/S/D | Space = up | LShift/LCtrl = down
 -- ============================================================
+
+-- Wait for LocalPlayer - required before any UI or character code
+-- NOTE: Matcha has no GetPropertyChangedSignal or CharacterAdded signals, so we poll instead.
+local _Players = game:GetService("Players")
+local _lp = _Players.LocalPlayer
+while not _lp do task.wait(0.1); _lp = _Players.LocalPlayer end
+-- Wait for the character to be in game too
+while not _lp.Character do task.wait(0.1) end
 
 
 
@@ -22,7 +30,7 @@
 --    local ui = require("naska")
 -- -------------------------------------------------------------
 
-local ui = loadstring(game:HttpGet("https://raw.githubusercontent.com/edutuu9/mycutelittlerankauilib/refs/heads/main/naska.lua"))()
+local ui = (function()
 
 
 local rgb = Color3.fromRGB
@@ -36,6 +44,7 @@ do
 
     local plrs = game.Players
     local plr = plrs.LocalPlayer
+    while not plr do task.wait(0.1); plr = plrs.LocalPlayer end
     local mouse = plr:GetMouse()
     local uis = game:GetService("UserInputService")
     local http = game:GetService("HttpService")
@@ -2487,13 +2496,93 @@ end)()
 --  STEP 2 -- SERVICES
 -- -------------------------------------------------------------
 local Players          = game:GetService("Players")
-local RunService       = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+
+-- -------------------------------------------------------------
+--  RunService VM emulator (Matcha does not expose RunService)
+-- -------------------------------------------------------------
+local RunService = (function()
+    local RS = {}
+    local _bindings = {}
+    local _active = true
+    local _lastTick = os.clock()
+    local _sortedBindings = {}
+    local _sortedCount = 0
+
+    local function Signal()
+        local sig = { _conns = {} }
+        function sig:Connect(fn)
+            local c = { fn = fn, connected = true }
+            table.insert(sig._conns, c)
+            return { Disconnect = function() c.connected = false; c.fn = nil end }
+        end
+        function sig:Fire(...)
+            local i = 1
+            while i <= #sig._conns do
+                local c = sig._conns[i]
+                if c.connected then pcall(c.fn, ...); i = i + 1
+                else table.remove(sig._conns, i) end
+            end
+        end
+        function sig:Wait()
+            local thread = coroutine.running()
+            local conn
+            conn = sig:Connect(function(...) conn:Disconnect(); task.spawn(thread, ...) end)
+            return coroutine.yield()
+        end
+        return sig
+    end
+
+    RS.Heartbeat    = Signal()
+    RS.RenderStepped = Signal()
+    RS.Stepped      = Signal()
+
+    function RS:BindToRenderStep(name, priority, fn)
+        if type(name) ~= "string" or type(fn) ~= "function" then return end
+        _bindings[name] = { Priority = priority or 0, Function = fn }
+        _sortedCount = -1  -- invalidate cache
+    end
+    function RS:UnbindFromRenderStep(name) _bindings[name] = nil; _sortedCount = -1 end
+    function RS:IsRunning() return _active end
+
+    task.spawn(function()
+        while _active do
+            local now = os.clock()
+            local dt  = math.min(now - _lastTick, 1)
+            _lastTick = now
+
+            RS.Stepped:Fire(now, dt)
+
+            -- rebuild sorted binding cache only when count changed
+            local count = 0
+            for _ in pairs(_bindings) do count = count + 1 end
+            if count ~= _sortedCount then
+                _sortedBindings = {}
+                for _, b in pairs(_bindings) do
+                    if type(b.Function) == "function" then
+                        table.insert(_sortedBindings, b)
+                    end
+                end
+                table.sort(_sortedBindings, function(a, b) return a.Priority < b.Priority end)
+                _sortedCount = count
+            end
+            for _, b in ipairs(_sortedBindings) do pcall(b.Function, dt) end
+
+            RS.RenderStepped:Fire(dt)
+            RS.Heartbeat:Fire(dt)
+            task.wait()
+        end
+    end)
+
+    return RS
+end)()
 
 
 -- -------------------------------------------------------------
 --  STEP 3 -- SHARED LOCALS
 -- -------------------------------------------------------------
+
+-- LocalPlayer and Character are guaranteed by the top-level wait above
 local LocalPlayer = Players.LocalPlayer
 local Mouse       = LocalPlayer:GetMouse()
 local Camera      = workspace.CurrentCamera
@@ -2509,9 +2598,19 @@ local function refreshChar()
 end
 
 refreshChar()
-LocalPlayer.CharacterAdded:Connect(function()
-    task.wait(0.15)   -- wait for descendants to replicate
-    refreshChar()
+
+-- Matcha has no CharacterAdded signal - poll for character changes instead
+task.spawn(function()
+    local lastChar = LocalPlayer.Character
+    while true do
+        task.wait(0.5)
+        local current = LocalPlayer.Character
+        if current ~= lastChar then
+            lastChar = current
+            task.wait(0.15)
+            refreshChar()
+        end
+    end
 end)
 
 
@@ -2585,13 +2684,7 @@ secClickerMain:addtoggle{
     Default  = false,
     Callback = function(v)
         AC.enabled = v
-        if v then
-            ac_startLoop()
-            lib:notify("Auto Clicker ON")
-        else
-            ac_stopLoop()
-            lib:notify("Auto Clicker OFF")
-        end
+        if v then ac_startLoop() else ac_stopLoop() end
     end,
 }
 
@@ -2608,8 +2701,11 @@ secClickerMain:addslider{
     end,
 }
 
-secClickerPos:addbutton{
-    Name     = "Save Current Mouse Position",
+-- Keybind: press the bound key to snapshot current mouse position
+secClickerPos:addkeybind{
+    Name     = "Save Mouse Position",
+    Default  = "f3",
+    Changed  = function() end,
     Callback = function()
         AC.savedX = Mouse.X
         AC.savedY = Mouse.Y
@@ -2630,25 +2726,34 @@ secClickerPos:addbutton{
 -- ===============================================================
 --  ANTI-AFK
 --
---  Hooks LocalPlayer.Idled (fires after ~5 min of no input) and
---  responds with a harmless OS key tap to reset the idle timer.
+--  Every ~10 seconds (randomised ±3s) taps one of W/A/S/D for a
+--  short random duration to simulate natural movement.
 -- ===============================================================
 
-local AFK = { enabled = false, _conn = nil }
+local AFK = { enabled = false }
+
+-- Windows VK codes for movement keys
+local AFK_KEYS = { 0x57, 0x41, 0x53, 0x44 }  -- W A S D
 
 local function afk_stop()
-    if AFK._conn then AFK._conn:Disconnect(); AFK._conn = nil end
+    AFK.enabled = false
 end
 
 local function afk_start()
     afk_stop()
-    AFK._conn = LocalPlayer.Idled:Connect(function()
-        if not AFK.enabled then return end
-        -- Scroll Lock (VK 0x91) is ignored by every Roblox game
-        -- but still counts as input to reset the kick timer.
-        keypress(0x91)
-        task.wait(0.05)
-        keyrelease(0x91)
+    AFK.enabled = true
+    task.spawn(function()
+        while AFK.enabled do
+            -- Wait a random interval between 7 and 13 seconds
+            task.wait(math.random(7, 13))
+            if not AFK.enabled then break end
+
+            -- Pick a random movement key and hold it for 0.1 - 0.4 seconds
+            local key = AFK_KEYS[math.random(1, #AFK_KEYS)]
+            keypress(key)
+            task.wait(math.random(10, 40) * 0.01)
+            keyrelease(key)
+        end
     end)
 end
 
@@ -2659,98 +2764,110 @@ secAFK:addtoggle{
     Default  = false,
     Callback = function(v)
         AFK.enabled = v
-        if v then
-            afk_start()
-            lib:notify("Anti-AFK ON")
-        else
-            afk_stop()
-            lib:notify("Anti-AFK OFF")
-        end
+        if v then afk_start() else afk_stop() end
     end,
 }
 
 
 -- ===============================================================
---  FLY  (BodyVelocity + BodyGyro, velocity lerped each Heartbeat
---         for a smooth tween feel -- no abrupt jumps)
+--  FLY  (velocity-based, Matcha-compatible)
+--
+--  Sets HRP.AssemblyLinearVelocity directly every Heartbeat.
+--  We own the full velocity vector each frame, so gravity can't
+--  accumulate - if no vertical key is held, Y velocity is forced
+--  to 0 (hover). This gives the tween/smooth feel without needing
+--  to write to Position (which Matcha may not support as writable).
+--
+--  Forward direction: Camera sits behind HRP in third-person.
+--  (HRP.Position - Camera.Position) projected to XZ = forward.
+--  Right = perpendicular on XZ plane.
 -- ===============================================================
 
+local VK = {
+    W = 0x57, A = 0x41, S = 0x53, D = 0x44,
+    SPACE  = 0x20,
+    LSHIFT = 0xA0,
+    LCTRL  = 0xA2,
+}
+
 local Fly = {
-    enabled = false,
-    speed   = 60,
-    _bv     = nil,   -- BodyVelocity
-    _bg     = nil,   -- BodyGyro
-    _conn   = nil,
+    enabled      = false,
+    speed        = 20,
+    _conn        = nil,
+    _savedCanCol = true,
+    _vx          = 0,
+    _vy          = 0,
+    _vz          = 0,
 }
 
 local function fly_stop()
     Fly.enabled = false
     if Fly._conn then Fly._conn:Disconnect(); Fly._conn = nil end
-    if Fly._bv   then Fly._bv:Destroy();  Fly._bv  = nil end
-    if Fly._bg   then Fly._bg:Destroy();  Fly._bg  = nil end
-    if Humanoid  then Humanoid.PlatformStand = false end
+    Fly._vx, Fly._vy, Fly._vz = 0, 0, 0
+    if HRP then
+        HRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        HRP.CanCollide = Fly._savedCanCol
+    end
 end
 
 local function fly_start()
     fly_stop()
-    if not HRP or not Humanoid then
+    if not HRP then
         lib:notify("No character - try again after spawning")
         return
     end
 
-    Fly.enabled = true
-    Humanoid.PlatformStand = true
-
-    -- BodyVelocity controls actual movement
-    local bv    = Instance.new("BodyVelocity")
-    bv.Velocity = Vector3.new(0, 0, 0)
-    bv.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-    bv.P        = 9e4
-    bv.Parent   = HRP
-    Fly._bv     = bv
-
-    -- BodyGyro keeps the character facing the camera
-    local bg     = Instance.new("BodyGyro")
-    bg.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
-    bg.P         = 9e4
-    bg.D         = 200
-    bg.CFrame    = HRP.CFrame
-    bg.Parent    = HRP
-    Fly._bg      = bg
+    Fly.enabled      = true
+    Fly._savedCanCol = HRP.CanCollide
+    HRP.CanCollide   = false
 
     Fly._conn = RunService.Heartbeat:Connect(function(dt)
         if not Fly.enabled then return end
         if not HRP         then fly_stop(); return end
 
-        local camCF = Camera.CFrame
-        local dir   = Vector3.new(0, 0, 0)
-        local uis   = UserInputService
+        -- Camera sits behind/above HRP in third-person Roblox.
+        -- HRP - Camera projected to XZ gives us the look/forward direction.
+        local camPos = Camera.Position
+        local hrpPos = HRP.Position
 
-        if uis:IsKeyDown(Enum.KeyCode.W) then dir = dir + camCF.LookVector  end
-        if uis:IsKeyDown(Enum.KeyCode.S) then dir = dir - camCF.LookVector  end
-        if uis:IsKeyDown(Enum.KeyCode.A) then dir = dir - camCF.RightVector end
-        if uis:IsKeyDown(Enum.KeyCode.D) then dir = dir + camCF.RightVector end
-        if uis:IsKeyDown(Enum.KeyCode.Space)       then
-            dir = dir + Vector3.new(0, 1, 0)
+        local fdx = hrpPos.X - camPos.X
+        local fdz = hrpPos.Z - camPos.Z
+        local fdLen = math.sqrt(fdx*fdx + fdz*fdz)
+
+        local fx, fz  -- forward unit
+        if fdLen > 0.01 then
+            fx = fdx / fdLen
+            fz = fdz / fdLen
+        else
+            fx, fz = 0, -1  -- fallback: camera directly above
         end
-        if uis:IsKeyDown(Enum.KeyCode.LeftShift) or
-           uis:IsKeyDown(Enum.KeyCode.LeftControl) then
-            dir = dir - Vector3.new(0, 1, 0)
+        -- right = rotate forward 90deg on Y: (fz, 0, -fx)
+        local rx, rz = fz, -fx
+
+        -- Desired velocity components from held keys
+        local tx, ty, tz = 0, 0, 0
+        if iskeypressed(VK.W) then tx = tx + fx; tz = tz + fz end
+        if iskeypressed(VK.S) then tx = tx - fx; tz = tz - fz end
+        if iskeypressed(VK.A) then tx = tx + rx; tz = tz + rz end
+        if iskeypressed(VK.D) then tx = tx - rx; tz = tz - rz end
+        if iskeypressed(VK.SPACE)                              then ty =  Fly.speed end
+        if iskeypressed(VK.LSHIFT) or iskeypressed(VK.LCTRL) then ty = -Fly.speed end
+
+        -- Normalize XZ if moving diagonally
+        local hLen = math.sqrt(tx*tx + tz*tz)
+        if hLen > 0.001 then
+            tx = (tx / hLen) * Fly.speed
+            tz = (tz / hLen) * Fly.speed
         end
 
-        -- Smooth lerp factor (higher multiplier = snappier acceleration)
-        local lf        = 1 - (0.5 ^ (dt * 12 * 60))
-        local targetVel = (dir.Magnitude > 0.001)
-                          and (dir.Unit * Fly.speed)
-                          or  Vector3.new(0, 0, 0)
+        -- Smooth lerp toward target (snappy but not instant)
+        local lf = 1 - (0.5 ^ (dt * 14))
+        Fly._vx = Fly._vx + (tx - Fly._vx) * lf
+        Fly._vy = Fly._vy + (ty - Fly._vy) * lf
+        Fly._vz = Fly._vz + (tz - Fly._vz) * lf
 
-        bv.Velocity = bv.Velocity:Lerp(targetVel, lf)
-
-        -- Orient horizontally to camera look direction
-        local flat = Vector3.new(camCF.LookVector.X, 0, camCF.LookVector.Z)
-        if flat.Magnitude > 0.01 then
-            bg.CFrame = CFrame.new(Vector3.new(0, 0, 0), flat)
-        end
+        -- Apply full velocity vector - this overrides gravity each frame
+        HRP.AssemblyLinearVelocity = Vector3.new(Fly._vx, Fly._vy, Fly._vz)
     end)
 end
 
@@ -2761,22 +2878,16 @@ secFlyMain:addtoggle{
     Name     = "Enable Fly",
     Default  = false,
     Callback = function(v)
-        if v then
-            fly_start()
-            lib:notify("Fly ON")
-        else
-            fly_stop()
-            lib:notify("Fly OFF")
-        end
+        if v then fly_start() else fly_stop() end
     end,
 }
 
 secFlyMain:addslider{
     Name     = "Speed",
-    Minimum  = 5,
-    Max      = 300,
-    Step     = 5,
-    Default  = 60,
+    Minimum  = 1,
+    Max      = 100,
+    Step     = 1,
+    Default  = 20,
     Suffix   = " studs/s",
     Callback = function(v) Fly.speed = v end,
 }
@@ -2788,97 +2899,87 @@ secFlyInfo:addbutton{ Name = "LShift / LCtrl  -- descend",     Callback = functi
 
 
 -- ===============================================================
---  CUSTOM ESP
+--  ESP  (dual-mode: named instances + folder scan)
 --
---  User types an instance name that exists somewhere in workspace
---  (searched recursively).  An optional display label can be set;
---  if left blank the instance name is used.
+--  Two sources feed into one shared drawing pool each frame:
 --
---  Per frame (Heartbeat), for every tracked target:
---    1. Locate the instance via workspace:FindFirstChild(name, true)
---    2. Project its 8 bounding-box corners through WorldToScreen()
---    3. Draw a 2-D rectangle (box outline)
---    4. Draw name label above the box
---    5. Draw distance in metres below the box
---    6. If a Humanoid is found -> draw a vertical health bar on the
---       left side of the box, coloured green->red by HP fraction.
---       If no Humanoid -> no health bar drawn at all.
+--  1. NAMED TARGETS  - user types any instance name that exists
+--     anywhere in Workspace (searched recursively via
+--     FindFirstChild). Works for single models, parts, unions.
+--     Each name added gets its own row with a remove button.
 --
---  Click "X  [name]" buttons in the "active targets" section to
---  remove individual targets.
+--  2. FOLDER SCAN    - user types a folder name in Workspace.
+--     Every direct child that is a BasePart, Model, or
+--     UnionOperation gets picked up automatically - no need
+--     to add each one manually.
+--
+--  Both sources are merged, distance-filtered, sorted closest-
+--  first, capped by Max Shown, then rendered from a shared pool
+--  of Drawing objects (no per-target allocation each frame).
 -- ===============================================================
 
--- espTargets[instanceName] = { instanceName, displayName, drawings }
-local espTargets    = {}
 local ESP_ENABLED   = false
 local espRenderConn = nil
+local ESP_MAX_SHOWN = 20
+local ESP_MAX_DIST  = 500
 
--- -- Drawing factories ------------------------------------------
+-- Named targets: key = instance name string, value = true
+local espNamedTargets = {}
+
+-- Folder scan: set of folder names to scan each frame
+local espFolderTargets = {}
+
+-- Drawing pool: created on demand, reused each frame
+local espPool     = {}
+local espPoolSize = 0
+
 local function newESPDrawings()
-    -- Hollow box outline
-    local box            = Drawing.new("Square")
-    box.Visible          = false
-    box.Filled           = false
-    box.Color            = Color3.fromRGB(255, 255, 255)
-    box.Transparency     = 1
-    box.Thickness        = 1.5
-    box.ZIndex           = 5
+    local box             = Drawing.new("Square")
+    box.Visible           = false
+    box.Filled            = false
+    box.Color             = Color3.fromRGB(255, 255, 255)
+    box.Transparency      = 1
+    box.Thickness         = 1.5
+    box.ZIndex            = 5
 
-    -- Instance / display name label (centred above box)
-    local nameText       = Drawing.new("Text")
-    nameText.Visible     = false
-    nameText.Text        = ""
-    nameText.Size        = 14
-    nameText.Font        = Drawing.Fonts.UI
-    nameText.Color       = Color3.fromRGB(255, 255, 255)
-    nameText.Transparency= 1
-    nameText.Outline     = true
-    nameText.Center      = true
-    nameText.ZIndex      = 6
+    local nameText        = Drawing.new("Text")
+    nameText.Visible      = false
+    nameText.Text         = ""
+    nameText.Size         = 14
+    nameText.Font         = Drawing.Fonts.UI
+    nameText.Color        = Color3.fromRGB(255, 255, 255)
+    nameText.Transparency = 1
+    nameText.Outline      = true
+    nameText.Center       = true
+    nameText.ZIndex       = 6
 
-    -- Distance label (centred below box)
-    local distText       = Drawing.new("Text")
-    distText.Visible     = false
-    distText.Text        = ""
-    distText.Size        = 13
-    distText.Font        = Drawing.Fonts.UI
-    distText.Color       = Color3.fromRGB(185, 185, 185)
-    distText.Transparency= 1
-    distText.Outline     = true
-    distText.Center      = true
-    distText.ZIndex      = 6
+    local distText        = Drawing.new("Text")
+    distText.Visible      = false
+    distText.Text         = ""
+    distText.Size         = 13
+    distText.Font         = Drawing.Fonts.UI
+    distText.Color        = Color3.fromRGB(185, 185, 185)
+    distText.Transparency = 1
+    distText.Outline      = true
+    distText.Center       = true
+    distText.ZIndex       = 6
 
-    -- Health bar background (dark, left of box)
-    local hpBarBG        = Drawing.new("Square")
-    hpBarBG.Visible      = false
-    hpBarBG.Filled       = true
-    hpBarBG.Color        = Color3.fromRGB(15, 15, 15)
-    hpBarBG.Transparency = 0.5
-    hpBarBG.ZIndex       = 5
+    local hpBarBG         = Drawing.new("Square")
+    hpBarBG.Visible       = false
+    hpBarBG.Filled        = true
+    hpBarBG.Color         = Color3.fromRGB(15, 15, 15)
+    hpBarBG.Transparency  = 0.5
+    hpBarBG.ZIndex        = 5
 
-    -- Health bar foreground (coloured fill)
-    local hpBarFG        = Drawing.new("Square")
-    hpBarFG.Visible      = false
-    hpBarFG.Filled       = true
-    hpBarFG.Color        = Color3.fromRGB(0, 255, 80)
-    hpBarFG.Transparency = 1
-    hpBarFG.ZIndex       = 6
+    local hpBarFG         = Drawing.new("Square")
+    hpBarFG.Visible       = false
+    hpBarFG.Filled        = true
+    hpBarFG.Color         = Color3.fromRGB(0, 255, 80)
+    hpBarFG.Transparency  = 1
+    hpBarFG.ZIndex        = 6
 
-    return {
-        box      = box,
-        nameText = nameText,
-        distText = distText,
-        hpBarBG  = hpBarBG,
-        hpBarFG  = hpBarFG,
-    }
-end
-
-local function removeESPDrawings(d)
-    d.box:Remove()
-    d.nameText:Remove()
-    d.distText:Remove()
-    d.hpBarBG:Remove()
-    d.hpBarFG:Remove()
+    return { box=box, nameText=nameText, distText=distText,
+             hpBarBG=hpBarBG, hpBarFG=hpBarFG }
 end
 
 local function hideESPDrawings(d)
@@ -2889,10 +2990,18 @@ local function hideESPDrawings(d)
     d.hpBarFG.Visible  = false
 end
 
--- -- 3-D bounding box -> 2-D screen rect ------------------------
---  Projects all 8 corners of the part's OBB through WorldToScreen.
---  Returns  minX, minY, maxX, maxY, worldPosition
---  Returns  nil if the object cannot be rendered or is off-screen.
+local function getDrawingSet(index)
+    while espPoolSize < index do
+        espPoolSize = espPoolSize + 1
+        espPool[espPoolSize] = newESPDrawings()
+    end
+    return espPool[index]
+end
+
+-- Project object center to screen. Returns sx,sy,onScreen or nil.
+-- Uses only Position (CFrame not supported in Matcha BasePart).
+-- Box size is derived from the part's Size scaled by distance for
+-- a rough perspective-correct feel.
 local function getScreenBounds(obj)
     local part
     if obj:IsA("BasePart") then
@@ -2904,126 +3013,173 @@ local function getScreenBounds(obj)
     end
     if not part then return nil end
 
-    local sz = part.Size
-    local cf = part.CFrame
-    local hx, hy, hz = sz.X * 0.5, sz.Y * 0.5, sz.Z * 0.5
+    local pos  = part.Position
+    local sz   = part.Size
 
-    local corners = {
-        cf * Vector3.new( hx,  hy,  hz),
-        cf * Vector3.new(-hx,  hy,  hz),
-        cf * Vector3.new( hx, -hy,  hz),
-        cf * Vector3.new(-hx, -hy,  hz),
-        cf * Vector3.new( hx,  hy, -hz),
-        cf * Vector3.new(-hx,  hy, -hz),
-        cf * Vector3.new( hx, -hy, -hz),
-        cf * Vector3.new(-hx, -hy, -hz),
-    }
+    -- Project the center and the top/bottom of the part
+    local topPos = Vector3.new(pos.X, pos.Y + sz.Y * 0.5, pos.Z)
+    local botPos = Vector3.new(pos.X, pos.Y - sz.Y * 0.5, pos.Z)
 
-    local minX, minY =  math.huge,  math.huge
-    local maxX, maxY = -math.huge, -math.huge
-    local anyOnScreen = false
-
-    for _, wPos in ipairs(corners) do
-        local sPos, onScreen = WorldToScreen(wPos)
-        if onScreen then anyOnScreen = true end
-        if sPos.X < minX then minX = sPos.X end
-        if sPos.Y < minY then minY = sPos.Y end
-        if sPos.X > maxX then maxX = sPos.X end
-        if sPos.Y > maxY then maxY = sPos.Y end
+    local centerS, onScreen = WorldToScreen(pos)
+    if not onScreen then
+        -- still try top/bottom in case center is just off
+        local topS, topOn = WorldToScreen(topPos)
+        local botS, botOn = WorldToScreen(botPos)
+        if not topOn and not botOn then return nil end
     end
 
-    local vp = Camera.ViewportSize
-    if not anyOnScreen and (maxX < 0 or minX > vp.X or maxY < 0 or minY > vp.Y) then
-        return nil
-    end
+    local topS  = WorldToScreen(topPos)
+    local botS  = WorldToScreen(botPos)
+    local centerS2 = WorldToScreen(pos)
 
-    return minX, minY, maxX, maxY, part.Position
+    -- Pixel height from projected top to bottom
+    local screenH = math.abs(botS.Y - topS.Y)
+    if screenH < 4 then screenH = 4 end
+
+    -- Width ~ height * aspect ratio of the part (capped for sanity)
+    local aspect = math.clamp(sz.X / math.max(sz.Y, 0.1), 0.3, 3)
+    local screenW = screenH * aspect
+    if screenW < 4 then screenW = 4 end
+
+    local cx = centerS2.X
+    local cy = (topS.Y + botS.Y) * 0.5
+
+    local minX = cx - screenW * 0.5
+    local maxX = cx + screenW * 0.5
+    local minY = topS.Y
+    local maxY = botS.Y
+
+    -- Clamp minY/maxY if they flipped (behind camera edge case)
+    if minY > maxY then minY, maxY = maxY, minY end
+
+    return minX, minY, maxX, maxY, pos
 end
 
--- -- HP bar colour: green (full) -> red (empty) -----------------
 local function hpColor(pct)
-    return Color3.fromRGB(
-        math.floor((1 - pct) * 255),
-        math.floor(pct       * 255),
-        0
-    )
+    return Color3.fromRGB(math.floor((1-pct)*255), math.floor(pct*255), 0)
 end
 
--- -- Per-frame ESP render loop ----------------------------------
+-- Helper: get position from an object for distance check
+local function getObjPos(obj)
+    if obj:IsA("BasePart") then
+        return obj.Position
+    elseif obj:IsA("Model") then
+        local r = obj:FindFirstChild("HumanoidRootPart")
+               or obj:FindFirstChildOfClass("BasePart")
+        if r then return r.Position end
+    end
+    return nil
+end
+
 local function startESPLoop()
     if espRenderConn then return end
-
     espRenderConn = RunService.Heartbeat:Connect(function()
         if not ESP_ENABLED then return end
         if not HRP         then return end
 
         local myPos = HRP.Position
 
-        for instanceName, target in pairs(espTargets) do
-            local d = target.drawings
+        -- Collect candidates from both sources into one table
+        -- using a set keyed by object to avoid duplicates
+        local seen = {}
+        local candidates = {}
 
-            -- Recursive workspace search each frame
-            local found = workspace:FindFirstChild(instanceName, true)
-            if not found then hideESPDrawings(d); continue end
+        -- SOURCE 1: named individual targets (recursive workspace search)
+        for name, _ in pairs(espNamedTargets) do
+            local obj = workspace:FindFirstChild(name, true)
+            if obj and not seen[obj] then
+                local pos = getObjPos(obj)
+                if pos then
+                    local dx,dy,dz = pos.X-myPos.X, pos.Y-myPos.Y, pos.Z-myPos.Z
+                    local dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+                    if dist <= ESP_MAX_DIST then
+                        seen[obj] = true
+                        table.insert(candidates, { obj=obj, dist=dist })
+                    end
+                end
+            end
+        end
 
-            -- Project to screen
-            local minX, minY, maxX, maxY, worldPos = getScreenBounds(found)
+        -- SOURCE 2: all tracked folders (direct children: Parts, Models)
+        for folderName, _ in pairs(espFolderTargets) do
+            local folder = workspace:FindFirstChild(folderName)
+            if folder then
+                for _, child in ipairs(folder:GetChildren()) do
+                    if (child:IsA("BasePart") or child:IsA("Model")) and not seen[child] then
+                        local pos = getObjPos(child)
+                        if pos then
+                            local dx,dy,dz = pos.X-myPos.X, pos.Y-myPos.Y, pos.Z-myPos.Z
+                            local dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+                            if dist <= ESP_MAX_DIST then
+                                seen[child] = true
+                                table.insert(candidates, { obj=child, dist=dist })
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        -- Sort closest first, cap to max shown
+        table.sort(candidates, function(a,b) return a.dist < b.dist end)
+        local shown = math.min(#candidates, ESP_MAX_SHOWN)
+
+        for i = 1, shown do
+            local entry = candidates[i]
+            local obj   = entry.obj
+            local d     = getDrawingSet(i)
+
+            local minX,minY,maxX,maxY = getScreenBounds(obj)
             if not minX then hideESPDrawings(d); continue end
 
             local PAD = 5
             local bx  = minX - PAD
             local by  = minY - PAD
-            local bw  = (maxX - minX) + PAD * 2
-            local bh  = (maxY - minY) + PAD * 2
+            local bw  = (maxX - minX) + PAD*2
+            local bh  = (maxY - minY) + PAD*2
+            local dist = math.floor(entry.dist)
 
-            -- Distance (studs, 1 stud ~= 1 m in most Roblox games)
-            local dist = math.floor((worldPos - myPos).Magnitude)
-
-            -- Check for Humanoid (handles both Model and loose Part cases)
             local humanoid
-            if found:IsA("Model") then
-                humanoid = found:FindFirstChildOfClass("Humanoid")
+            if obj:IsA("Model") then
+                humanoid = obj:FindFirstChildOfClass("Humanoid")
             end
-            if not humanoid and found.Parent then
-                humanoid = found.Parent:FindFirstChildOfClass("Humanoid")
+            if not humanoid and obj.Parent then
+                humanoid = obj.Parent:FindFirstChildOfClass("Humanoid")
             end
 
-            -- -- Box -------------------------------------------
             d.box.Position = Vector2.new(bx, by)
             d.box.Size     = Vector2.new(bw, bh)
             d.box.Visible  = true
 
-            -- -- Name label (above box) ------------------------
-            d.nameText.Text     = target.displayName
-            d.nameText.Position = Vector2.new(bx + bw * 0.5, by - 17)
+            d.nameText.Text     = obj.Name
+            d.nameText.Position = Vector2.new(bx + bw*.5, by - 17)
             d.nameText.Visible  = true
 
-            -- -- Distance label (below box) --------------------
-            d.distText.Text     = tostring(dist) .. "m"
-            d.distText.Position = Vector2.new(bx + bw * 0.5, by + bh + 3)
+            d.distText.Text     = tostring(dist).."m"
+            d.distText.Position = Vector2.new(bx + bw*.5, by + bh + 3)
             d.distText.Visible  = true
 
-            -- -- Health bar (left side, only when Humanoid exists)
             if humanoid and humanoid.MaxHealth > 0 then
                 local pct  = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
                 local barW = 4
                 local barX = bx - barW - 3
-
                 d.hpBarBG.Position = Vector2.new(barX, by)
                 d.hpBarBG.Size     = Vector2.new(barW, bh)
                 d.hpBarBG.Visible  = true
-
-                -- Fill is bottom-anchored so it visually drains downward
-                local fillH        = math.max(1, math.floor(bh * pct))
+                local fillH = math.max(1, math.floor(bh * pct))
                 d.hpBarFG.Position = Vector2.new(barX, by + bh - fillH)
                 d.hpBarFG.Size     = Vector2.new(barW, fillH)
                 d.hpBarFG.Color    = hpColor(pct)
                 d.hpBarFG.Visible  = true
             else
-                -- No Humanoid -> no health bar
                 d.hpBarBG.Visible = false
                 d.hpBarFG.Visible = false
             end
+        end
+
+        -- Hide unused pool slots
+        for i = shown+1, espPoolSize do
+            hideESPDrawings(espPool[i])
         end
     end)
 end
@@ -3033,12 +3189,16 @@ local function stopESPLoop()
         espRenderConn:Disconnect()
         espRenderConn = nil
     end
+    for i = 1, espPoolSize do hideESPDrawings(espPool[i]) end
 end
 
--- -- ESP UI sections --------------------------------------------
-local secESPCtrl = tabESP:section("esp control",    false)
-local secESPAdd  = tabESP:section("add target",     false)
-local secESPList = tabESP:section("active targets", true)
+-- ---------------------------------------------------------------
+--  ESP UI
+-- ---------------------------------------------------------------
+local secESPCtrl   = tabESP:section("esp control",     false)
+local secESPConf   = tabESP:section("esp settings",    true)
+local secESPNamed  = tabESP:section("named targets",   false)
+local secESPFolder = tabESP:section("folder scan",     true)
 
 -- Master toggle
 secESPCtrl:addtoggle{
@@ -3046,94 +3206,141 @@ secESPCtrl:addtoggle{
     Default  = false,
     Callback = function(v)
         ESP_ENABLED = v
-        if v then
-            startESPLoop()
-            lib:notify("ESP ON")
-        else
-            stopESPLoop()
-            for _, t in pairs(espTargets) do hideESPDrawings(t.drawings) end
-            lib:notify("ESP OFF")
-        end
+        if v then startESPLoop() else stopESPLoop() end
     end,
 }
 
--- Input fields (the .text property on textbox objects holds the current value)
-local tbInstName = secESPAdd:addtextbox{
-    Name        = "Instance Name (in Workspace)",
-    Placeholder = "e.g.  Zombie,  TreasureChest",
+-- Distance / count sliders
+secESPConf:addslider{
+    Name     = "Max Shown",
+    Minimum  = 1,
+    Max      = 50,
+    Step     = 1,
+    Default  = 20,
+    Suffix   = " targets",
+    Callback = function(v) ESP_MAX_SHOWN = v end,
+}
+
+secESPConf:addslider{
+    Name     = "Max Distance",
+    Minimum  = 10,
+    Max      = 2000,
+    Step     = 10,
+    Default  = 500,
+    Suffix   = " studs",
+    Callback = function(v) ESP_MAX_DIST = v end,
+}
+
+-- Named targets: textbox + Add + list of remove buttons
+local tbNamedInst = secESPNamed:addtextbox{
+    Name        = "Instance Name",
+    Placeholder = "e.g.  Zombie  or  TreasureChest",
     Callback    = function() end,
 }
 
-local tbDispName = secESPAdd:addtextbox{
-    Name        = "Display Label (shown on screen)",
-    Placeholder = "e.g.  Enemy  (blank = use name)",
-    Callback    = function() end,
-}
-
--- Rebuild the active-targets list whenever the table changes
-local function rebuildList()
-    secESPList:clear()
+-- Rebuild the named-targets list
+local secESPNamedList  -- forward declare for use inside rebuildNamedList
+local function rebuildNamedList()
+    secESPNamedList:clear()
     local any = false
-    for key, target in pairs(espTargets) do
+    for name, _ in pairs(espNamedTargets) do
         any = true
-        local row = ("[%s]  %s"):format(target.instanceName, target.displayName)
-        secESPList:addbutton{
-            Name     = "remove:  " .. row,
+        secESPNamedList:addbutton{
+            Name     = "remove:  " .. name,
             Callback = function()
-                removeESPDrawings(target.drawings)
-                espTargets[key] = nil
-                rebuildList()
-                lib:notify("Removed: " .. target.displayName)
+                espNamedTargets[name] = nil
+                rebuildNamedList()
             end,
         }
     end
     if not any then
-        secESPList:addbutton{
-            Name     = "(no active targets - add one below)",
+        secESPNamedList:addbutton{
+            Name = "(none - add one above)",
             Callback = function() end,
         }
     end
 end
 
-rebuildList()
-
-secESPAdd:addbutton{
-    Name     = "Add Target",
+secESPNamed:addbutton{
+    Name     = "Add Named Target",
     Callback = function()
-        local inst = (tbInstName.text or ""):match("^%s*(.-)%s*$")
-        local disp = (tbDispName.text or ""):match("^%s*(.-)%s*$")
-
-        if inst == "" then
-            lib:notify("Enter an instance name first")
+        local name = (tbNamedInst.text or ""):match("^%s*(.-)%s*$")
+        if name == "" then return end
+        if espNamedTargets[name] then
+            lib:notify("Already tracking: " .. name)
             return
         end
-        if disp == "" then disp = inst end
+        espNamedTargets[name] = true
+        rebuildNamedList()
+        lib:notify("ESP added: " .. name)
+    end,
+}
 
-        if espTargets[inst] then
-            lib:notify("Already tracking: " .. inst)
-            return
-        end
+secESPNamed:addbutton{
+    Name     = "Clear All Named",
+    Callback = function()
+        espNamedTargets = {}
+        rebuildNamedList()
+    end,
+}
 
-        espTargets[inst] = {
-            instanceName = inst,
-            displayName  = disp,
-            drawings     = newESPDrawings(),
+-- Create the list section AFTER the buttons so it appears below them
+secESPNamedList = tabESP:section("named list", false)
+rebuildNamedList()
+
+local tbFolderName = secESPFolder:addtextbox{
+    Name        = "Folder Name",
+    Placeholder = "e.g.  Enemies,  Collectibles",
+    Callback    = function() end,
+}
+
+local secESPFolderList
+local function rebuildFolderList()
+    secESPFolderList:clear()
+    local any = false
+    for name, _ in pairs(espFolderTargets) do
+        any = true
+        secESPFolderList:addbutton{
+            Name     = "remove:  " .. name,
+            Callback = function()
+                espFolderTargets[name] = nil
+                rebuildFolderList()
+            end,
         }
+    end
+    if not any then
+        secESPFolderList:addbutton{
+            Name = "(none - add one above)",
+            Callback = function() end,
+        }
+    end
+end
 
-        rebuildList()
-        lib:notify("ESP added: " .. disp)
-    end,
-}
-
-secESPAdd:addbutton{
-    Name     = "Remove All Targets",
+secESPFolder:addbutton{
+    Name     = "Add Folder",
     Callback = function()
-        for _, t in pairs(espTargets) do removeESPDrawings(t.drawings) end
-        espTargets = {}
-        rebuildList()
-        lib:notify("All targets removed")
+        local name = (tbFolderName.text or ""):match("^%s*(.-)%s*$")
+        if name == "" then return end
+        if espFolderTargets[name] then
+            lib:notify("Already scanning: " .. name)
+            return
+        end
+        espFolderTargets[name] = true
+        rebuildFolderList()
+        lib:notify("Folder added: " .. name)
     end,
 }
+
+secESPFolder:addbutton{
+    Name     = "Clear All Folders",
+    Callback = function()
+        espFolderTargets = {}
+        rebuildFolderList()
+    end,
+}
+
+secESPFolderList = tabESP:section("folder list", true)
+rebuildFolderList()
 
 
 -- ===============================================================
@@ -3185,4 +3392,3 @@ fly_stop()
 ac_stopLoop()
 afk_stop()
 stopESPLoop()
-for _, t in pairs(espTargets) do removeESPDrawings(t.drawings) end
