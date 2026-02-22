@@ -1,0 +1,726 @@
+--[[
+╔══════════════════════════════════════════════════════════════╗
+║                  MATCHA MULTI-TOOL  v1.0                     ║
+║        Auto Clicker | Anti-AFK | Fly | Custom ESP            ║
+║                  UI: naska.ui  (zolbert[xonist])             ║
+╚══════════════════════════════════════════════════════════════╝
+
+
+
+FLY CONTROLS
+────────────
+  W / A / S / D   directional flight (follows camera look)
+  Space            ascend
+  LShift / LCtrl   descend
+
+-- >>>  PASTE NASKA.LUA CONTENTS HERE (replace this block) <<<
+local ui = loadstring(game:HttpGet("<https://raw.githubusercontent.com/edutuu9/mycutelittlerankauilib/refs/heads/main/naska.lua>"))()
+do
+    -- TEMPORARY STUB – replace with actual naska.lua content
+    error("Replace this block with the naska.lua source or a loadstring call.")
+end
+
+
+-- ─────────────────────────────────────────────────────────────
+--  STEP 2 ── SERVICES
+-- ─────────────────────────────────────────────────────────────
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+
+-- ─────────────────────────────────────────────────────────────
+--  STEP 3 ── SHARED LOCALS
+-- ─────────────────────────────────────────────────────────────
+local LocalPlayer = Players.LocalPlayer
+local Mouse       = LocalPlayer:GetMouse()
+local Camera      = workspace.CurrentCamera
+
+-- Live character references – refreshed automatically on respawn
+local Character, Humanoid, HRP
+
+local function refreshChar()
+    Character = LocalPlayer.Character
+    if not Character then return end
+    Humanoid  = Character:FindFirstChildOfClass("Humanoid")
+    HRP       = Character:FindFirstChild("HumanoidRootPart")
+end
+
+refreshChar()
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(0.15)   -- wait for descendants to replicate
+    refreshChar()
+end)
+
+
+-- ─────────────────────────────────────────────────────────────
+--  CREATE WINDOW
+--  naska API:  ui:create(title, { theme, size })
+-- ─────────────────────────────────────────────────────────────
+local lib = ui:create("Matcha Tool", {
+    theme = "gamesense",                -- cyberpunk | gamesense | bitchbot
+    size  = Vector2.new(600, 420),
+})
+
+local tabClicker = lib:tab("auto clicker")
+local tabAFK     = lib:tab("anti-afk")
+local tabFly     = lib:tab("fly")
+local tabESP     = lib:tab("esp")
+local tabOpts    = lib:tab("options")
+
+
+-- ═══════════════════════════════════════════════════════════════
+--  AUTO CLICKER
+--
+--  •  Configurable CPS (clicks per second)
+--  •  Optional saved mouse position: when enabled, the cursor is
+--     warped to that position before every click via mousemoveabs()
+--  •  Toggle turns the Heartbeat loop on/off cleanly
+-- ═══════════════════════════════════════════════════════════════
+
+local AC = {
+    enabled = false,
+    cps     = 10,
+    savedX  = nil,   -- saved screen X (integer pixels)
+    savedY  = nil,   -- saved screen Y (integer pixels)
+    _conn   = nil,   -- RunService.Heartbeat connection
+    _acc    = 0,     -- frame accumulator (seconds)
+}
+
+local function ac_stopLoop()
+    if AC._conn then AC._conn:Disconnect(); AC._conn = nil end
+    AC._acc = 0
+end
+
+local function ac_startLoop()
+    ac_stopLoop()
+    local interval = 1 / math.clamp(AC.cps, 1, 100)
+
+    AC._conn = RunService.Heartbeat:Connect(function(dt)
+        if not AC.enabled then return end
+        AC._acc = AC._acc + dt
+        if AC._acc < interval then return end
+        AC._acc = 0
+
+        -- Warp cursor to the saved position if one is stored
+        if AC.savedX and AC.savedY then
+            mousemoveabs(AC.savedX, AC.savedY)
+        end
+
+        -- Fire an OS-level left-click through Matcha's input API
+        mouse1press()
+        task.wait(0.016)
+        mouse1release()
+    end)
+end
+
+-- ── Sections  (false = left col,  true = right col) ────────────
+local secClickerMain = tabClicker:section("clicker settings", false)
+local secClickerPos  = tabClicker:section("mouse position",   true)
+
+secClickerMain:addtoggle{
+    Name     = "Enable Auto Clicker",
+    Default  = false,
+    Callback = function(v)
+        AC.enabled = v
+        if v then
+            ac_startLoop()
+            lib:notify("Auto Clicker ON")
+        else
+            ac_stopLoop()
+            lib:notify("Auto Clicker OFF")
+        end
+    end,
+}
+
+secClickerMain:addslider{
+    Name     = "Clicks Per Second",
+    Minimum  = 1,
+    Max      = 50,
+    Step     = 1,
+    Default  = 10,
+    Suffix   = " CPS",
+    Callback = function(v)
+        AC.cps = v
+        if AC.enabled then ac_startLoop() end   -- restart with new interval
+    end,
+}
+
+secClickerPos:addbutton{
+    Name     = "Save Current Mouse Position",
+    Callback = function()
+        AC.savedX = Mouse.X
+        AC.savedY = Mouse.Y
+        lib:notify(("Saved  X:%d  Y:%d"):format(AC.savedX, AC.savedY))
+    end,
+}
+
+secClickerPos:addbutton{
+    Name     = "Clear Saved Position",
+    Callback = function()
+        AC.savedX = nil
+        AC.savedY = nil
+        lib:notify("Saved position cleared")
+    end,
+}
+
+
+-- ═══════════════════════════════════════════════════════════════
+--  ANTI-AFK
+--
+--  Hooks LocalPlayer.Idled (fires after ~5 min of no input) and
+--  responds with a harmless OS key tap to reset the idle timer.
+-- ═══════════════════════════════════════════════════════════════
+
+local AFK = { enabled = false, _conn = nil }
+
+local function afk_stop()
+    if AFK._conn then AFK._conn:Disconnect(); AFK._conn = nil end
+end
+
+local function afk_start()
+    afk_stop()
+    AFK._conn = LocalPlayer.Idled:Connect(function()
+        if not AFK.enabled then return end
+        -- Scroll Lock (VK 0x91) is ignored by every Roblox game
+        -- but still counts as input to reset the kick timer.
+        keypress(0x91)
+        task.wait(0.05)
+        keyrelease(0x91)
+    end)
+end
+
+local secAFK = tabAFK:section("anti-afk settings", false)
+
+secAFK:addtoggle{
+    Name     = "Enable Anti-AFK",
+    Default  = false,
+    Callback = function(v)
+        AFK.enabled = v
+        if v then
+            afk_start()
+            lib:notify("Anti-AFK ON")
+        else
+            afk_stop()
+            lib:notify("Anti-AFK OFF")
+        end
+    end,
+}
+
+
+-- ═══════════════════════════════════════════════════════════════
+--  FLY  (BodyVelocity + BodyGyro, velocity lerped each Heartbeat
+--         for a smooth tween feel — no abrupt jumps)
+-- ═══════════════════════════════════════════════════════════════
+
+local Fly = {
+    enabled = false,
+    speed   = 60,
+    _bv     = nil,   -- BodyVelocity
+    _bg     = nil,   -- BodyGyro
+    _conn   = nil,
+}
+
+local function fly_stop()
+    Fly.enabled = false
+    if Fly._conn then Fly._conn:Disconnect(); Fly._conn = nil end
+    if Fly._bv   then Fly._bv:Destroy();  Fly._bv  = nil end
+    if Fly._bg   then Fly._bg:Destroy();  Fly._bg  = nil end
+    if Humanoid  then Humanoid.PlatformStand = false end
+end
+
+local function fly_start()
+    fly_stop()
+    if not HRP or not Humanoid then
+        lib:notify("No character – try again after spawning")
+        return
+    end
+
+    Fly.enabled = true
+    Humanoid.PlatformStand = true
+
+    -- BodyVelocity controls actual movement
+    local bv    = Instance.new("BodyVelocity")
+    bv.Velocity = Vector3.new(0, 0, 0)
+    bv.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+    bv.P        = 9e4
+    bv.Parent   = HRP
+    Fly._bv     = bv
+
+    -- BodyGyro keeps the character facing the camera
+    local bg     = Instance.new("BodyGyro")
+    bg.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
+    bg.P         = 9e4
+    bg.D         = 200
+    bg.CFrame    = HRP.CFrame
+    bg.Parent    = HRP
+    Fly._bg      = bg
+
+    Fly._conn = RunService.Heartbeat:Connect(function(dt)
+        if not Fly.enabled then return end
+        if not HRP         then fly_stop(); return end
+
+        local camCF = Camera.CFrame
+        local dir   = Vector3.new(0, 0, 0)
+        local uis   = UserInputService
+
+        if uis:IsKeyDown(Enum.KeyCode.W) then dir = dir + camCF.LookVector  end
+        if uis:IsKeyDown(Enum.KeyCode.S) then dir = dir - camCF.LookVector  end
+        if uis:IsKeyDown(Enum.KeyCode.A) then dir = dir - camCF.RightVector end
+        if uis:IsKeyDown(Enum.KeyCode.D) then dir = dir + camCF.RightVector end
+        if uis:IsKeyDown(Enum.KeyCode.Space)       then
+            dir = dir + Vector3.new(0, 1, 0)
+        end
+        if uis:IsKeyDown(Enum.KeyCode.LeftShift) or
+           uis:IsKeyDown(Enum.KeyCode.LeftControl) then
+            dir = dir - Vector3.new(0, 1, 0)
+        end
+
+        -- Smooth lerp factor (higher multiplier = snappier acceleration)
+        local lf        = 1 - (0.5 ^ (dt * 12 * 60))
+        local targetVel = (dir.Magnitude > 0.001)
+                          and (dir.Unit * Fly.speed)
+                          or  Vector3.new(0, 0, 0)
+
+        bv.Velocity = bv.Velocity:Lerp(targetVel, lf)
+
+        -- Orient horizontally to camera look direction
+        local flat = Vector3.new(camCF.LookVector.X, 0, camCF.LookVector.Z)
+        if flat.Magnitude > 0.01 then
+            bg.CFrame = CFrame.new(Vector3.new(0, 0, 0), flat)
+        end
+    end)
+end
+
+local secFlyMain = tabFly:section("fly settings", false)
+local secFlyInfo = tabFly:section("controls",     true)
+
+secFlyMain:addtoggle{
+    Name     = "Enable Fly",
+    Default  = false,
+    Callback = function(v)
+        if v then
+            fly_start()
+            lib:notify("Fly ON")
+        else
+            fly_stop()
+            lib:notify("Fly OFF")
+        end
+    end,
+}
+
+secFlyMain:addslider{
+    Name     = "Speed",
+    Minimum  = 5,
+    Max      = 300,
+    Step     = 5,
+    Default  = 60,
+    Suffix   = " studs/s",
+    Callback = function(v) Fly.speed = v end,
+}
+
+-- Static info rows using zero-action buttons (naska has no label element)
+secFlyInfo:addbutton{ Name = "W / A / S / D   — directional", Callback = function() end }
+secFlyInfo:addbutton{ Name = "Space            — ascend",      Callback = function() end }
+secFlyInfo:addbutton{ Name = "LShift / LCtrl   — descend",     Callback = function() end }
+
+
+-- ═══════════════════════════════════════════════════════════════
+--  CUSTOM ESP
+--
+--  User types an instance name that exists somewhere in workspace
+--  (searched recursively).  An optional display label can be set;
+--  if left blank the instance name is used.
+--
+--  Per frame (Heartbeat), for every tracked target:
+--    1. Locate the instance via workspace:FindFirstChild(name, true)
+--    2. Project its 8 bounding-box corners through WorldToScreen()
+--    3. Draw a 2-D rectangle (box outline)
+--    4. Draw name label above the box
+--    5. Draw distance in metres below the box
+--    6. If a Humanoid is found → draw a vertical health bar on the
+--       left side of the box, coloured green→red by HP fraction.
+--       If no Humanoid → no health bar drawn at all.
+--
+--  Click "✕  [name]" buttons in the "active targets" section to
+--  remove individual targets.
+-- ═══════════════════════════════════════════════════════════════
+
+-- espTargets[instanceName] = { instanceName, displayName, drawings }
+local espTargets    = {}
+local ESP_ENABLED   = false
+local espRenderConn = nil
+
+-- ── Drawing factories ──────────────────────────────────────────
+local function newESPDrawings()
+    -- Hollow box outline
+    local box            = Drawing.new("Square")
+    box.Visible          = false
+    box.Filled           = false
+    box.Color            = Color3.fromRGB(255, 255, 255)
+    box.Transparency     = 1
+    box.Thickness        = 1.5
+    box.ZIndex           = 5
+
+    -- Instance / display name label (centred above box)
+    local nameText       = Drawing.new("Text")
+    nameText.Visible     = false
+    nameText.Text        = ""
+    nameText.Size        = 14
+    nameText.Font        = Drawing.Fonts.UI
+    nameText.Color       = Color3.fromRGB(255, 255, 255)
+    nameText.Transparency= 1
+    nameText.Outline     = true
+    nameText.Center      = true
+    nameText.ZIndex      = 6
+
+    -- Distance label (centred below box)
+    local distText       = Drawing.new("Text")
+    distText.Visible     = false
+    distText.Text        = ""
+    distText.Size        = 13
+    distText.Font        = Drawing.Fonts.UI
+    distText.Color       = Color3.fromRGB(185, 185, 185)
+    distText.Transparency= 1
+    distText.Outline     = true
+    distText.Center      = true
+    distText.ZIndex      = 6
+
+    -- Health bar background (dark, left of box)
+    local hpBarBG        = Drawing.new("Square")
+    hpBarBG.Visible      = false
+    hpBarBG.Filled       = true
+    hpBarBG.Color        = Color3.fromRGB(15, 15, 15)
+    hpBarBG.Transparency = 0.5
+    hpBarBG.ZIndex       = 5
+
+    -- Health bar foreground (coloured fill)
+    local hpBarFG        = Drawing.new("Square")
+    hpBarFG.Visible      = false
+    hpBarFG.Filled       = true
+    hpBarFG.Color        = Color3.fromRGB(0, 255, 80)
+    hpBarFG.Transparency = 1
+    hpBarFG.ZIndex       = 6
+
+    return {
+        box      = box,
+        nameText = nameText,
+        distText = distText,
+        hpBarBG  = hpBarBG,
+        hpBarFG  = hpBarFG,
+    }
+end
+
+local function removeESPDrawings(d)
+    d.box:Remove()
+    d.nameText:Remove()
+    d.distText:Remove()
+    d.hpBarBG:Remove()
+    d.hpBarFG:Remove()
+end
+
+local function hideESPDrawings(d)
+    d.box.Visible      = false
+    d.nameText.Visible = false
+    d.distText.Visible = false
+    d.hpBarBG.Visible  = false
+    d.hpBarFG.Visible  = false
+end
+
+-- ── 3-D bounding box → 2-D screen rect ────────────────────────
+--  Projects all 8 corners of the part's OBB through WorldToScreen.
+--  Returns  minX, minY, maxX, maxY, worldPosition
+--  Returns  nil if the object cannot be rendered or is off-screen.
+local function getScreenBounds(obj)
+    local part
+    if obj:IsA("BasePart") then
+        part = obj
+    elseif obj:IsA("Model") then
+        part = obj.PrimaryPart
+              or obj:FindFirstChild("HumanoidRootPart")
+              or obj:FindFirstChildOfClass("BasePart")
+    end
+    if not part then return nil end
+
+    local sz = part.Size
+    local cf = part.CFrame
+    local hx, hy, hz = sz.X * 0.5, sz.Y * 0.5, sz.Z * 0.5
+
+    local corners = {
+        cf * Vector3.new( hx,  hy,  hz),
+        cf * Vector3.new(-hx,  hy,  hz),
+        cf * Vector3.new( hx, -hy,  hz),
+        cf * Vector3.new(-hx, -hy,  hz),
+        cf * Vector3.new( hx,  hy, -hz),
+        cf * Vector3.new(-hx,  hy, -hz),
+        cf * Vector3.new( hx, -hy, -hz),
+        cf * Vector3.new(-hx, -hy, -hz),
+    }
+
+    local minX, minY =  math.huge,  math.huge
+    local maxX, maxY = -math.huge, -math.huge
+    local anyOnScreen = false
+
+    for _, wPos in ipairs(corners) do
+        local sPos, onScreen = WorldToScreen(wPos)
+        if onScreen then anyOnScreen = true end
+        if sPos.X < minX then minX = sPos.X end
+        if sPos.Y < minY then minY = sPos.Y end
+        if sPos.X > maxX then maxX = sPos.X end
+        if sPos.Y > maxY then maxY = sPos.Y end
+    end
+
+    local vp = Camera.ViewportSize
+    if not anyOnScreen and (maxX < 0 or minX > vp.X or maxY < 0 or minY > vp.Y) then
+        return nil
+    end
+
+    return minX, minY, maxX, maxY, part.Position
+end
+
+-- ── HP bar colour: green (full) → red (empty) ─────────────────
+local function hpColor(pct)
+    return Color3.fromRGB(
+        math.floor((1 - pct) * 255),
+        math.floor(pct       * 255),
+        0
+    )
+end
+
+-- ── Per-frame ESP render loop ──────────────────────────────────
+local function startESPLoop()
+    if espRenderConn then return end
+
+    espRenderConn = RunService.Heartbeat:Connect(function()
+        if not ESP_ENABLED then return end
+        if not HRP         then return end
+
+        local myPos = HRP.Position
+
+        for instanceName, target in pairs(espTargets) do
+            local d = target.drawings
+
+            -- Recursive workspace search each frame
+            local found = workspace:FindFirstChild(instanceName, true)
+            if not found then hideESPDrawings(d); continue end
+
+            -- Project to screen
+            local minX, minY, maxX, maxY, worldPos = getScreenBounds(found)
+            if not minX then hideESPDrawings(d); continue end
+
+            local PAD = 5
+            local bx  = minX - PAD
+            local by  = minY - PAD
+            local bw  = (maxX - minX) + PAD * 2
+            local bh  = (maxY - minY) + PAD * 2
+
+            -- Distance (studs, 1 stud ≈ 1 m in most Roblox games)
+            local dist = math.floor((worldPos - myPos).Magnitude)
+
+            -- Check for Humanoid (handles both Model and loose Part cases)
+            local humanoid
+            if found:IsA("Model") then
+                humanoid = found:FindFirstChildOfClass("Humanoid")
+            end
+            if not humanoid and found.Parent then
+                humanoid = found.Parent:FindFirstChildOfClass("Humanoid")
+            end
+
+            -- ── Box ───────────────────────────────────────────
+            d.box.Position = Vector2.new(bx, by)
+            d.box.Size     = Vector2.new(bw, bh)
+            d.box.Visible  = true
+
+            -- ── Name label (above box) ────────────────────────
+            d.nameText.Text     = target.displayName
+            d.nameText.Position = Vector2.new(bx + bw * 0.5, by - 17)
+            d.nameText.Visible  = true
+
+            -- ── Distance label (below box) ────────────────────
+            d.distText.Text     = tostring(dist) .. "m"
+            d.distText.Position = Vector2.new(bx + bw * 0.5, by + bh + 3)
+            d.distText.Visible  = true
+
+            -- ── Health bar (left side, only when Humanoid exists)
+            if humanoid and humanoid.MaxHealth > 0 then
+                local pct  = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
+                local barW = 4
+                local barX = bx - barW - 3
+
+                d.hpBarBG.Position = Vector2.new(barX, by)
+                d.hpBarBG.Size     = Vector2.new(barW, bh)
+                d.hpBarBG.Visible  = true
+
+                -- Fill is bottom-anchored so it visually drains downward
+                local fillH        = math.max(1, math.floor(bh * pct))
+                d.hpBarFG.Position = Vector2.new(barX, by + bh - fillH)
+                d.hpBarFG.Size     = Vector2.new(barW, fillH)
+                d.hpBarFG.Color    = hpColor(pct)
+                d.hpBarFG.Visible  = true
+            else
+                -- No Humanoid → no health bar
+                d.hpBarBG.Visible = false
+                d.hpBarFG.Visible = false
+            end
+        end
+    end)
+end
+
+local function stopESPLoop()
+    if espRenderConn then
+        espRenderConn:Disconnect()
+        espRenderConn = nil
+    end
+end
+
+-- ── ESP UI sections ────────────────────────────────────────────
+local secESPCtrl = tabESP:section("esp control",    false)
+local secESPAdd  = tabESP:section("add target",     false)
+local secESPList = tabESP:section("active targets", true)
+
+-- Master toggle
+secESPCtrl:addtoggle{
+    Name     = "Enable ESP",
+    Default  = false,
+    Callback = function(v)
+        ESP_ENABLED = v
+        if v then
+            startESPLoop()
+            lib:notify("ESP ON")
+        else
+            stopESPLoop()
+            for _, t in pairs(espTargets) do hideESPDrawings(t.drawings) end
+            lib:notify("ESP OFF")
+        end
+    end,
+}
+
+-- Input fields (the .text property on textbox objects holds the current value)
+local tbInstName = secESPAdd:addtextbox{
+    Name        = "Instance Name (in Workspace)",
+    Placeholder = "e.g.  Zombie,  TreasureChest",
+    Callback    = function() end,
+}
+
+local tbDispName = secESPAdd:addtextbox{
+    Name        = "Display Label (shown on screen)",
+    Placeholder = "e.g.  Enemy  (blank = use name)",
+    Callback    = function() end,
+}
+
+-- Rebuild the active-targets list whenever the table changes
+local function rebuildList()
+    secESPList:clear()
+    local any = false
+    for key, target in pairs(espTargets) do
+        any = true
+        local row = ("[%s]  %s"):format(target.instanceName, target.displayName)
+        secESPList:addbutton{
+            Name     = "remove:  " .. row,
+            Callback = function()
+                removeESPDrawings(target.drawings)
+                espTargets[key] = nil
+                rebuildList()
+                lib:notify("Removed: " .. target.displayName)
+            end,
+        }
+    end
+    if not any then
+        secESPList:addbutton{
+            Name     = "(no active targets – add one below)",
+            Callback = function() end,
+        }
+    end
+end
+
+rebuildList()
+
+secESPAdd:addbutton{
+    Name     = "Add Target",
+    Callback = function()
+        local inst = (tbInstName.text or ""):match("^%s*(.-)%s*$")
+        local disp = (tbDispName.text or ""):match("^%s*(.-)%s*$")
+
+        if inst == "" then
+            lib:notify("Enter an instance name first")
+            return
+        end
+        if disp == "" then disp = inst end
+
+        if espTargets[inst] then
+            lib:notify("Already tracking: " .. inst)
+            return
+        end
+
+        espTargets[inst] = {
+            instanceName = inst,
+            displayName  = disp,
+            drawings     = newESPDrawings(),
+        }
+
+        rebuildList()
+        lib:notify("ESP added: " .. disp)
+    end,
+}
+
+secESPAdd:addbutton{
+    Name     = "Remove All Targets",
+    Callback = function()
+        for _, t in pairs(espTargets) do removeESPDrawings(t.drawings) end
+        espTargets = {}
+        rebuildList()
+        lib:notify("All targets removed")
+    end,
+}
+
+
+-- ═══════════════════════════════════════════════════════════════
+--  OPTIONS
+-- ═══════════════════════════════════════════════════════════════
+
+local secUISet = tabOpts:section("ui settings", false)
+local secTheme = tabOpts:section("theme",       true)
+
+secUISet:addtoggle{
+    Name     = "Watermark",
+    Default  = true,
+    Callback = function(v) lib.watermark_enabled = v end,
+}
+
+secUISet:addkeybind{
+    Name    = "Toggle UI Keybind",
+    Default = lib.closebind,
+    Changed = function(v) lib.closebind = v end,
+}
+
+secUISet:addbutton{
+    Name     = "Destroy UI",
+    Callback = function() lib.running = false end,
+}
+
+secTheme:adddropdown{
+    Name     = "Theme",
+    Options  = lib.themenames,
+    Default  = lib.theme,
+    Callback = function(v)
+        lib.theme  = v
+        lib.colors = lib.themes[v]
+    end,
+}
+
+
+-- ═══════════════════════════════════════════════════════════════
+--  MAIN LOOP  (naska requires lib:step() to be called each tick)
+-- ═══════════════════════════════════════════════════════════════
+while lib.running do
+    lib:step()
+    task.wait()
+end
+
+-- ── Cleanup on exit ────────────────────────────────────────────
+lib:Destroy()
+fly_stop()
+ac_stopLoop()
+afk_stop()
+stopESPLoop()
+for _, t in pairs(espTargets) do removeESPDrawings(t.drawings) end
