@@ -11,9 +11,7 @@ while not _lp do task.wait(0.1); _lp = _Players.LocalPlayer end
 while not _lp.Character do task.wait(0.1) end
 
 
--- ============================================================
 --  NASKA UI LIBRARY
--- ============================================================
 local ui = (function()
 
 local rgb = Color3.fromRGB
@@ -1103,9 +1101,7 @@ return ui
 end)()
 
 
--- ============================================================
 --  SERVICES & RUNSERVICE EMULATOR
--- ============================================================
 local Players = game:GetService("Players")
 
 local RunService = (function()
@@ -1154,9 +1150,7 @@ local RunService = (function()
 end)()
 
 
--- ============================================================
 --  SHARED LOCALS
--- ============================================================
 local LocalPlayer = Players.LocalPlayer
 local Mouse       = LocalPlayer:GetMouse()
 local Camera      = workspace.CurrentCamera
@@ -1180,9 +1174,7 @@ task.spawn(function()
 end)
 
 
--- ============================================================
 --  CREATE WINDOW
--- ============================================================
 local lib = ui:create("ZazaMenu", {theme="gamesense", size=Vector2.new(600,420)})
 
 local tabClicker = lib:tab("auto clicker")
@@ -1192,9 +1184,7 @@ local tabESP     = lib:tab("esp")
 local tabOpts    = lib:tab("options")
 
 
--- ============================================================
 --  AUTO CLICKER
--- ============================================================
 local AC = {enabled=false,cps=10,savedX=nil,savedY=nil,_conn=nil,_acc=0}
 
 local function ac_stopLoop() if AC._conn then AC._conn:Disconnect(); AC._conn=nil end; AC._acc=0 end
@@ -1220,9 +1210,7 @@ secClickerPos:addkeybind{Name="Save Mouse Position",Default="f3",Changed=functio
 secClickerPos:addbutton{Name="Clear Saved Position",Callback=function() AC.savedX=nil; AC.savedY=nil; lib:notify("Saved position cleared") end}
 
 
--- ============================================================
 --  ANTI-AFK
--- ============================================================
 local AFK={enabled=false}
 local AFK_KEYS={0x57,0x41,0x53,0x44}
 
@@ -1242,9 +1230,7 @@ end
 tabAFK:section("anti-afk settings",false):addtoggle{Name="Enable Anti-AFK",Default=false,Callback=function(v) AFK.enabled=v; if v then afk_start() else afk_stop() end end}
 
 
--- ============================================================
 --  FLY
--- ============================================================
 local VK={W=0x57,A=0x41,S=0x53,D=0x44,SPACE=0x20,LSHIFT=0xA0,LCTRL=0xA2}
 local Fly={enabled=false,speed=20,_conn=nil,_savedCanCol=true,_vx=0,_vy=0,_vz=0}
 
@@ -1288,9 +1274,7 @@ secFlyInfo:addbutton{Name="Space           -- ascend",     Callback=function()en
 secFlyInfo:addbutton{Name="LShift / LCtrl  -- descend",   Callback=function()end}
 
 
--- ============================================================
 --  ESP
--- ============================================================
 local ESP_ENABLED   = false
 local espRenderConn = nil
 local ESP_MAX_SHOWN = 20
@@ -1315,13 +1299,6 @@ local function getDrawingSet(i)
     return espPool[i]
 end
 
--- ---------------------------------------------------------------
---  PART DETECTION
---
---  Matcha's IsA() may not handle inheritance for all types.
---  We use ClassName directly to be safe.
---  Common BasePart subclasses are listed; add more if needed.
--- ---------------------------------------------------------------
 local PART_CN = {
     Part=true, MeshPart=true, UnionOperation=true,
     WedgePart=true, CornerWedgePart=true, TrussPart=true,
@@ -1332,22 +1309,16 @@ local function isPart(inst)
     return PART_CN[inst.ClassName] == true
 end
 
--- ---------------------------------------------------------------
---  findPartInChildren: recursively walks GetChildren to find a
---  BasePart. Does NOT use GetDescendants (not available in Matcha).
--- ---------------------------------------------------------------
 local function findPartInChildren(container, depth)
     depth = depth or 0
-    if depth > 6 then return nil end  -- safety cap on deeply nested models
+    if depth > 6 then return nil end  
 
     local ok, children = pcall(function() return container:GetChildren() end)
     if not ok or not children then return nil end
 
-    -- First pass: direct BasePart children (fastest case)
     for _, child in ipairs(children) do
         if isPart(child) then return child end
     end
-    -- Second pass: recurse into sub-Models and Folders
     for _, child in ipairs(children) do
         local cn = child.ClassName
         if cn == "Model" or cn == "Folder" then
@@ -1359,26 +1330,12 @@ local function findPartInChildren(container, depth)
     return nil
 end
 
--- ---------------------------------------------------------------
---  getModelPart: get the best BasePart for a Model.
---
---  1. PrimaryPart if set (pcall because Matcha throws on unset
---     PrimaryPart instead of returning nil)
---  2. Recursive GetChildren walk as fallback
--- ---------------------------------------------------------------
 local function getModelPart(model)
     local ok, pp = pcall(function() return model.PrimaryPart end)
     if ok and pp then return pp end
     return findPartInChildren(model)
 end
 
--- ---------------------------------------------------------------
---  collectFromContainer
---
---  Walk a folder/model and fill `out` with { part, name }.
---  Uses ClassName instead of IsA for reliability in Matcha.
---  `seen` is always a fresh local table - never share with tryAdd.
--- ---------------------------------------------------------------
 local function collectFromContainer(container, out, seen)
     local ok, children = pcall(function() return container:GetChildren() end)
     if not ok or not children then return end
@@ -1431,7 +1388,7 @@ local function startESPLoop()
         if not HRP then return end
 
         local myPos = HRP.Position
-        -- `seen` belongs only to tryAdd - never passed into collectFromContainer
+        
         local seen = {}
         local candidates = {}
 
@@ -1446,8 +1403,6 @@ local function startESPLoop()
             end
         end
 
-        -- SOURCE 1: named targets
-        -- Uses ClassName checks instead of IsA for Matcha reliability
         for name, _ in pairs(espNamedTargets) do
             local obj = workspace:FindFirstChild(name, true)
             if obj then
@@ -1460,8 +1415,6 @@ local function startESPLoop()
             end
         end
 
-        -- SOURCE 2: folder scan
-        -- Each folder gets its own fresh collSeen (separate from tryAdd's seen)
         for folderName, _ in pairs(espFolderTargets) do
             local folder = workspace:FindFirstChild(folderName)
             if folder then
@@ -1516,9 +1469,7 @@ local function stopESPLoop()
 end
 
 
--- ============================================================
 --  ESP UI
--- ============================================================
 local secESPCtrl   = tabESP:section("esp control",  false)
 local secESPConf   = tabESP:section("esp settings", true)
 local secESPNamed  = tabESP:section("named targets",false)
@@ -1575,9 +1526,7 @@ secESPFolderList = tabESP:section("folder list",true)
 rebuildFolderList()
 
 
--- ============================================================
 --  OPTIONS
--- ============================================================
 local secUISet = tabOpts:section("ui settings",false)
 local secTheme = tabOpts:section("theme",true)
 
@@ -1587,9 +1536,7 @@ secUISet:addbutton{Name="Destroy UI",Callback=function() lib.running=false end}
 secTheme:adddropdown{Name="Theme",Options=lib.themenames,Default=lib.theme,Callback=function(v) lib.theme=v; lib.colors=lib.themes[v] end}
 
 
--- ============================================================
 --  MAIN LOOP
--- ============================================================
 while lib.running do lib:step(); task.wait() end
 
 lib:Destroy(); fly_stop(); ac_stopLoop(); afk_stop(); stopESPLoop()
