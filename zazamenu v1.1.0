@@ -1,0 +1,3188 @@
+-- ============================================================
+-- ZAZA MENU v1.1  |  Matcha executor
+-- Features: Auto Clicker | Anti-AFK | Fly | Custom ESP
+-- UI Library: naska.ui (embedded)
+-- Toggle UI: F2  (rebindable in the Options tab)
+-- Fly controls: W/A/S/D | Space = up | LShift/LCtrl = down
+-- ============================================================
+
+
+
+
+-- -------------------------------------------------------------
+--  STEP 1 -- LOAD NASKA UI LIBRARY
+--
+--  Option A: paste naska.lua source directly above this comment
+--            and make sure the file ends with `return ui`.
+--
+--  Option B: host naska.lua somewhere and use:
+--    local ui = loadstring(game:HttpGet("<url>"))()
+--
+--  Option C (Matcha require, if you store naska.lua in a folder):
+--    local ui = require("naska")
+-- -------------------------------------------------------------
+
+local ui = (function()
+
+
+local rgb = Color3.fromRGB
+local function v2(x, y)
+    return Vector2.new(math.floor(x or 0), math.floor(y or 0))
+end
+
+local ui = {}
+do
+    ui.__index = ui
+
+    local plrs = game.Players
+    local plr = plrs.LocalPlayer
+    local mouse = plr:GetMouse()
+    local uis = game:GetService("UserInputService")
+    local http = game:GetService("HttpService")
+
+    local clock = os.clock
+
+    local function hsvToRgb(h, s, v)
+        local r, g, b
+        local i = math.floor(h * 6)
+        local f = h * 6 - i
+        local p = v * (1 - s)
+        local q = v * (1 - f * s)
+        local t = v * (1 - (1 - f) * s)
+        i = i % 6
+        if i == 0 then r, g, b = v, t, p
+        elseif i == 1 then r, g, b = q, v, p
+        elseif i == 2 then r, g, b = p, v, t
+        elseif i == 3 then r, g, b = p, q, v
+        elseif i == 4 then r, g, b = t, p, v
+        elseif i == 5 then r, g, b = v, p, q
+        end
+        return rgb(r * 255, g * 255, b * 255)
+    end
+
+    local function rgbToHsv(color)
+        local r, g, b = color.R, color.G, color.B
+        local max, min = math.max(r, g, b), math.min(r, g, b)
+        local h, s, v
+        v = max
+        local d = max - min
+        if max == 0 then s = 0 else s = d / max end
+        if max == min then
+            h = 0
+        else
+            if max == r then
+                h = (g - b) / d + (g < b and 6 or 0)
+            elseif max == g then
+                h = (b - r) / d + 2
+            elseif max == b then
+                h = (r - g) / d + 4
+            end
+            h = h / 6
+        end
+        return h, s, v
+    end
+
+    local function countDecimalPlaces(number)
+        local s = tostring(number)
+        if not s:find("%.") then return 0 end
+        return #s:split(".")[2]
+    end
+
+    local function truncate(number, decimals)
+        local mult = 10^(decimals or 0)
+        return math.floor(number * mult + 0.5) / mult
+    end
+
+    local function mp()
+        return v2(mouse.X, mouse.Y)
+    end
+
+    local function mousebound(pos,size)
+        local m = mp()
+        return m.X >= pos.X and m.X <= (pos.X + size.X) and m.Y >= pos.Y and m.Y <= (pos.Y + size.Y)
+    end
+
+    local function change(inst, tab)
+        if typeof(inst) == "table" and #inst > 0 then
+            for _, v_ in inst do
+                for i, v in tab do
+                    if v_[i] ~= v then
+                        v_[i] = v
+                    end
+                end
+            end
+        else
+            for i, v in tab do
+                if inst[i] ~= v then
+                    inst[i] = v
+                end
+            end
+        end
+    end
+
+    local function create(drawing, properties)
+        local d = Drawing.new(drawing)
+
+        if drawing == "Square" then
+            d.Position = v2(0,0)
+            d.Size = v2(0,0)
+            d.Filled = false
+        elseif drawing == "Line" then
+            d.From = v2(0,0)
+            d.To = v2(0,0)
+            d.Thickness = 1
+        elseif drawing == "Circle" then
+            d.Position = v2(0,0)
+            d.Radius = 0
+            d.NumSides = 12
+            d.Thickness = 1
+        elseif drawing == "Text" then
+            d.Position = v2(0,0)
+            d.Text = ""
+            d.Size = 14
+            d.Font = Drawing.Fonts.UI
+        end
+
+        change(d, properties)
+        return d
+    end
+
+    local function lerp(a, b, t)
+        return a + (b - a) * t
+    end
+
+    local function getLerp(lerp,delta)
+        return 1 - (0.5 ^ (delta * lerp * 60))
+    end
+
+    local function lerpRGB(c1, c2, t)
+        local success,result = pcall(function()
+            return rgb(
+                math.floor(lerp(c1.R * 255, c2.R * 255, t)),
+                math.floor(lerp(c1.G * 255, c2.G * 255, t)),
+                math.floor(lerp(c1.B * 255, c2.B * 255, t))
+            )
+        end)
+        if success then return result end
+        if not success then return c1 end
+    end
+
+    local function textbound(str, textSize)
+        textSize = textSize or 14
+        return #str * (textSize * 0.65), textSize
+    end
+
+    local function centertext(text,pos,size)
+        local t = textbound(text)
+        return v2(pos.X + (size.X/2) - (t/2), pos.Y + (size.Y/2) - 8)
+    end
+
+    local function truncate(num, dp)
+        local mult = 10^(dp or 0)
+        return math.floor(num * mult) / mult
+    end
+
+    local function countDecimalPlaces(num)
+        local str = tostring(num)
+        local decimal_pos = string.find(str, "%.")
+        if decimal_pos then
+            return #str - decimal_pos
+        end
+        return 0
+    end
+
+    local function createGradient(frameRect, colorStart, colorEnd, breaks)
+        local colorStart = colorStart
+        local colorEnd = colorEnd
+        local bands = {}
+
+        if not frameRect.Position then frameRect.Position = v2() end
+        if not frameRect.Size then frameRect.Size = v2() end
+
+        local breakHeight = frameRect.Size.Y / breaks
+
+        for i = 0, breaks - 1 do
+            local t = i / (breaks - 1)
+            local color = lerpRGB(colorStart, colorEnd, t)
+
+            local rect = Drawing.new("Square")
+            rect.Filled = true
+            rect.Color = color
+            rect.Size = Vector2.new(frameRect.Size.X, math.ceil(breakHeight))
+            rect.Position = Vector2.new(frameRect.Position.X, frameRect.Position.Y + (i * breakHeight))
+            table.insert(bands, rect)
+        end
+
+        return setmetatable({
+            Remove = function()
+                for i,v in bands do v:Remove() end
+            end,
+            ChangeColor = function(cs,ce)
+                colorStart = cs
+                colorEnd = ce
+
+                for i,v in bands do
+                    local t = i / (breaks - 1)
+                    local color = lerpRGB(colorStart, colorEnd, t)
+
+                    v.Color = color
+                end
+            end
+        },{
+            __index = function(_self,index)
+                if index == "Size" then return frameRect.Size end
+                return bands[1][index]
+            end,
+            __newindex = function(_self,index,val)
+                for i,v in bands do
+                    if index == "Size" then
+                        frameRect.Size = val
+                        breakHeight = frameRect.Size.Y / breaks
+                        v.Size = v2(val.X, math.ceil(breakHeight))
+                        v.Position = v2(frameRect.Position.X, frameRect.Position.Y + (i * breakHeight))
+                    elseif index == "Position" then
+                        frameRect.Position = val
+                        v.Position = v2(frameRect.Position.X, frameRect.Position.Y + (i * breakHeight))
+                    elseif index ~= "Color" then
+                        v[index] = val
+                    end
+                end
+            end
+        })
+    end
+
+    local function createHorizontalGradient(frameRect, colorStart, colorEnd, breaks)
+        local colorStart = colorStart
+        local colorEnd = colorEnd
+        local bands = {}
+
+        if not frameRect.Position then frameRect.Position = v2() end
+        if not frameRect.Size then frameRect.Size = v2() end
+
+        local breakWidth = frameRect.Size.X / breaks
+
+        for i = 0, breaks - 1 do
+            local t = i / (breaks - 1)
+            local color = lerpRGB(colorStart, colorEnd, t)
+
+            local rect = Drawing.new("Square")
+            rect.Filled = true
+            rect.Color = color
+            rect.Size = Vector2.new(math.ceil(breakWidth), frameRect.Size.Y)
+            rect.Position = Vector2.new(frameRect.Position.X + (i * breakWidth), frameRect.Position.Y)
+            table.insert(bands, rect)
+        end
+
+        return setmetatable({
+            Remove = function()
+                for i,v in bands do v:Remove() end
+            end,
+            ChangeColor = function(_self, cs, ce)
+                colorStart = cs
+                colorEnd = ce
+
+                for i,v in bands do
+                    local t = i / (breaks - 1)
+                    local color = lerpRGB(colorStart, colorEnd, t)
+                    v.Color = color
+                end
+            end
+        },{
+            __index = function(_self,index)
+                if index == "Size" then return frameRect.Size end
+                return bands[1][index]
+            end,
+            __newindex = function(_self,index,val)
+                for i,v in bands do
+                    if index == "Size" then
+                        frameRect.Size = val
+                        breakWidth = frameRect.Size.X / breaks
+                        v.Size = v2(math.ceil(breakWidth), val.Y)
+                        v.Position = v2(frameRect.Position.X + (i * breakWidth), frameRect.Position.Y)
+                    elseif index == "Position" then
+                        frameRect.Position = val
+                        v.Position = v2(frameRect.Position.X + (i * breakWidth), frameRect.Position.Y)
+                    elseif index ~= "Color" then
+                        v[index] = val
+                    end
+                end
+            end
+        })
+    end
+
+        local function createVerticalGradientAlpha(frameRect, color, alphaTop, alphaBottom, breaks)
+        local alphaTop = alphaTop
+        local alphaBottom = alphaBottom
+        local bands = {}
+
+        if not frameRect.Position then frameRect.Position = v2() end
+        if not frameRect.Size then frameRect.Size = v2() end
+
+        local breakHeight = frameRect.Size.Y / breaks
+
+        for i = 0, breaks - 1 do
+            local t = i / (breaks - 1)
+            local alpha = lerp(alphaTop, alphaBottom, t)
+
+            local rect = Drawing.new("Square")
+            rect.Filled = true
+            rect.Color = color
+            rect.Transparency = alpha
+            rect.Size = Vector2.new(frameRect.Size.X, math.ceil(breakHeight))
+            rect.Position = Vector2.new(frameRect.Position.X, frameRect.Position.Y + (i * breakHeight))
+            table.insert(bands, rect)
+        end
+
+        return setmetatable({
+            Remove = function()
+                for i,v in bands do v:Remove() end
+            end,
+            ChangeAlpha = function(_self, at, ab)
+                alphaTop = at
+                alphaBottom = ab
+                for i,v in bands do
+                    local t = i / (breaks - 1)
+                    v.Transparency = lerp(alphaTop, alphaBottom, t)
+                end
+            end
+        },{
+            __index = function(_self,index)
+                if index == "Size" then return frameRect.Size end
+                return bands[1][index]
+            end,
+            __newindex = function(_self,index,val)
+                for i,v in bands do
+                    if index == "Size" then
+                        frameRect.Size = val
+                        breakHeight = frameRect.Size.Y / breaks
+                        v.Size = v2(val.X, math.ceil(breakHeight))
+                        v.Position = v2(frameRect.Position.X, frameRect.Position.Y + (i * breakHeight))
+                    elseif index == "Position" then
+                        frameRect.Position = val
+                        v.Position = v2(frameRect.Position.X, frameRect.Position.Y + (i * breakHeight))
+                    elseif index == "Transparency" then
+
+                        local t = i / (breaks - 1)
+                        v.Transparency = lerp(alphaTop, alphaBottom, t) * val
+                    else
+                        v[index] = val
+                    end
+                end
+            end
+        })
+    end
+
+    local function createOutline(v, color, zindex)
+        local out = Drawing.new("Square")
+        change(out, {
+            Position = v.Position + Vector2.new(1, 1),
+            Size = v.Size + Vector2.new(-2,-2),
+            Filled = true,
+            Color = color or rgb(148, 156, 187),
+            ZIndex = zindex or -1
+        })
+        return out
+    end
+
+    function ui:create(title,settings)
+        local self = setmetatable({}, ui)
+        local settings = settings or {}
+
+        self.keys = {
+            delete = { mem = 0x2E },
+            minus = { mem = 0xBD },
+            mouse1 = { mem = 0x01 },
+            mouse2 = { mem = 0x02 },
+            mouse3 = { mem = 0x04 },
+            leftshift = { mem = 0xA0 },
+            ["0"] = { mem = 0x30 },
+            ["1"] = { mem = 0x31 },
+            ["2"] = { mem = 0x32 },
+            ["3"] = { mem = 0x33 },
+            ["4"] = { mem = 0x34 },
+            ["5"] = { mem = 0x35 },
+            ["6"] = { mem = 0x36 },
+            ["7"] = { mem = 0x37 },
+            ["8"] = { mem = 0x38 },
+            ["9"] = { mem = 0x39 },
+            a = { mem = 0x41 },
+            b = { mem = 0x42 },
+            c = { mem = 0x43 },
+            d = { mem = 0x44 },
+            e = { mem = 0x45 },
+            f = { mem = 0x46 },
+            g = { mem = 0x47 },
+            h = { mem = 0x48 },
+            i = { mem = 0x49 },
+            j = { mem = 0x4A },
+            k = { mem = 0x4B },
+            l = { mem = 0x4C },
+            m = { mem = 0x4D },
+            n = { mem = 0x4E },
+            o = { mem = 0x4F },
+            p = { mem = 0x50 },
+            q = { mem = 0x51 },
+            r = { mem = 0x52 },
+            s = { mem = 0x53 },
+            t = { mem = 0x54 },
+            u = { mem = 0x55 },
+            v = { mem = 0x56 },
+            w = { mem = 0x57 },
+            x = { mem = 0x58 },
+            y = { mem = 0x59 },
+            z = { mem = 0x5A },
+            tab = { mem = 0x09 },
+            backspace = { mem = 0x08 },
+            numpad0 = { mem = 0x60 },
+            numpad1 = { mem = 0x61 },
+            numpad2 = { mem = 0x62 },
+            numpad3 = { mem = 0x63 },
+            numpad4 = { mem = 0x64 },
+            numpad5 = { mem = 0x65 },
+            numpad6 = { mem = 0x66 },
+            numpad7 = { mem = 0x67 },
+            numpad8 = { mem = 0x68 },
+            numpad9 = { mem = 0x69 },
+            multiply = { mem = 0x6A },
+            add = { mem = 0x6B },
+            separator = { mem = 0x6C },
+            subtract = { mem = 0x6D },
+            decimal = { mem = 0x6E },
+            divide = { mem = 0x6F },
+            f1 = { mem = 0x70 },
+            f2 = { mem = 0x71 },
+            f3 = { mem = 0x72 },
+            f4 = { mem = 0x73 },
+            f5 = { mem = 0x74 },
+            f6 = { mem = 0x75 },
+            f7 = { mem = 0x76 },
+            f8 = { mem = 0x77 },
+            f9 = { mem = 0x78 },
+            f10 = { mem = 0x79 },
+            f11 = { mem = 0x7A },
+            f12 = { mem = 0x7B },
+            f13 = { mem = 0x7C },
+            f14 = { mem = 0x7D },
+            f15 = { mem = 0x7E },
+            f16 = { mem = 0x7F },
+            f17 = { mem = 0x80 },
+            f18 = { mem = 0x81 },
+            f19 = { mem = 0x82 },
+            f20 = { mem = 0x83 },
+            f21 = { mem = 0x84 },
+            f22 = { mem = 0x85 },
+            f23 = { mem = 0x86 },
+            f24 = { mem = 0x87 },
+            numlock = { mem = 0x90 },
+            lcontrol = { mem = 0xA2 },
+            rcontrol = { mem = 0xA3 },
+            leftalt = { mem = 0xA4 },
+            rightalt = { mem = 0xA5 },
+            rshift = { mem = 0xA1 },
+            space = { mem = 0x20 },
+            return_key = { mem = 0x0D },
+            escape = { mem = 0x1B },
+            period = { mem = 0xBE },
+            comma = { mem = 0xBC },
+            slash = { mem = 0xBF },
+            semicolon = { mem = 0xBA },
+            quote = { mem = 0xDE },
+            lbracket = { mem = 0xDB },
+            rbracket = { mem = 0xDD },
+            backslash = { mem = 0xDC },
+            equals = { mem = 0xBB },
+        }
+
+        for i, v in self.keys do
+            v.click = false
+            v.hold = false
+        end
+
+        self.key_timers = {}
+
+        self.w = 500
+        self.h = 700
+
+        if settings.size then
+            self.w = settings.size.X
+            self.h = settings.size.Y
+        end
+
+        local middle = (workspace.CurrentCamera.ViewportSize*.5) - (v2(self.w,self.h)*.5)
+        self.x = middle.X
+        self.y = middle.Y
+
+        self.name = title or "n/a"
+        self.padding = 6
+        self.th = 25
+        self.taboffset = 45
+
+        self.tabs = {}
+        self.currenttab = 1
+
+        self.closebind = "f2"
+
+        self.transparency = 1
+        self.open = true
+        self.running = true
+
+        self.border = 0
+        self.focused_textbox = nil
+
+        self.themes = {
+            cyberpunk = {
+                base = rgb(24, 24, 24),
+                mantle = rgb(19, 19, 19),
+                crust = rgb(12, 12, 12),
+                text = rgb(255, 255, 255),
+                subtext0 = rgb(160, 160, 160),
+                subtext1 = rgb(160, 160, 160),
+                surface0 = rgb(34, 34, 34),
+                surface1 = rgb(45, 45, 45),
+                surface2 = rgb(50, 50, 50),
+                overlay0 = rgb(100, 100, 100),
+                overlay1 = rgb(100, 100, 100),
+                overlay2 = rgb(100, 100, 100),
+                accent = rgb(255, 0, 85),
+                blue = rgb(255, 0, 85),
+                red = rgb(255, 0, 85),
+                green = rgb(255, 0, 85),
+                yellow = rgb(255, 0, 85),
+                magenta = rgb(255, 0, 85),
+                teal = rgb(255, 0, 85),
+                rosewater = rgb(255, 0, 85),
+                flamingo = rgb(255, 0, 85),
+                pink = rgb(255, 0, 85),
+                mauve = rgb(255, 0, 85),
+                maroon = rgb(255, 0, 85),
+                peach = rgb(255, 0, 85),
+                sky = rgb(255, 0, 85),
+                sapphire = rgb(255, 0, 85),
+                lavender = rgb(255, 0, 85),
+            },
+            gamesense = {
+                base = rgb(24, 24, 24),
+                mantle = rgb(19, 19, 19),
+                crust = rgb(12, 12, 12),
+                text = rgb(220, 220, 220),
+                subtext0 = rgb(140, 140, 140),
+                subtext1 = rgb(140, 140, 140),
+                surface0 = rgb(32, 32, 32),
+                surface1 = rgb(42, 42, 42),
+                surface2 = rgb(52, 52, 52),
+                overlay0 = rgb(80, 80, 80),
+                overlay1 = rgb(80, 80, 80),
+                overlay2 = rgb(80, 80, 80),
+                accent = rgb(138, 226, 52),
+                blue = rgb(138, 226, 52),
+                red = rgb(138, 226, 52),
+                green = rgb(138, 226, 52),
+                yellow = rgb(138, 226, 52),
+                magenta = rgb(138, 226, 52),
+                teal = rgb(138, 226, 52),
+                rosewater = rgb(138, 226, 52),
+                flamingo = rgb(138, 226, 52),
+                pink = rgb(138, 226, 52),
+                mauve = rgb(138, 226, 52),
+                maroon = rgb(138, 226, 52),
+                peach = rgb(138, 226, 52),
+                sky = rgb(138, 226, 52),
+                sapphire = rgb(138, 226, 52),
+                lavender = rgb(138, 226, 52),
+            },
+            bitchbot = {
+                base = rgb(31, 31, 31),
+                mantle = rgb(31, 31, 31),
+                crust = rgb(0, 0, 0),
+                text = rgb(202, 201, 201),
+                subtext0 = rgb(100, 100, 100),
+                subtext1 = rgb(100, 100, 100),
+                surface0 = rgb(41, 42, 40),
+                surface1 = rgb(41, 42, 40),
+                surface2 = rgb(53, 52, 52),
+                overlay0 = rgb(53, 52, 52),
+                overlay1 = rgb(53, 52, 52),
+                overlay2 = rgb(53, 52, 52),
+                accent = rgb(120, 85, 147),
+                blue = rgb(120, 85, 147),
+                red = rgb(120, 85, 147),
+                green = rgb(120, 85, 147),
+                yellow = rgb(120, 85, 147),
+                magenta = rgb(120, 85, 147),
+                teal = rgb(120, 85, 147),
+                rosewater = rgb(120, 85, 147),
+                flamingo = rgb(120, 85, 147),
+                pink = rgb(120, 85, 147),
+                mauve = rgb(120, 85, 147),
+                maroon = rgb(120, 85, 147),
+                peach = rgb(120, 85, 147),
+                sky = rgb(120, 85, 147),
+                sapphire = rgb(120, 85, 147),
+                lavender = rgb(120, 85, 147),
+            },
+        }
+
+        self.theme = "gamesense"
+        self.themenames = {"cyberpunk", "gamesense", "bitchbot"}
+        self.colors = self.themes[self.theme]
+
+        self._last = clock()
+        self._draggable = false
+        self.minH = 300
+        self.minW = 400
+        self.minH = 300
+        self.minW = 400
+
+        local main = create("Square", {Filled = true, Color = self.colors.base})
+        local main_outline = createOutline(main,self.colors.crust,-1)
+
+        local mantle = create("Square",{Filled = true, Color = self.colors.mantle})
+        local text = create("Text", {Text = self.name, Color = self.colors.text,ZIndex = 3, Outline = false})
+        local gradient = createGradient({Position = v2(self.x,self.y), Size = v2(self.w,self.th)}, self.colors.base,self.colors.surface0,25)
+        local gradient_outline = create("Line",{
+            ZIndex = 1,
+            Thickness = 2,
+        })
+        gradient.ZIndex = 2
+
+        local resize_handle = create("Square", {
+            Filled = true,
+            Color = self.colors.surface0,
+            Size = v2(10, 10),
+            ZIndex = 3
+        })
+        self._resizing = false
+
+        self.watermark = {
+            container = create("Square", { Filled = true, Color = self.colors.base, ZIndex = 2000, Visible = false }),
+            outline = create("Square", { Filled = false, Color = self.colors.crust, ZIndex = 1999, Visible = false }),
+            accent_bar = create("Square", { Filled = true, Color = self.colors.accent, ZIndex = 2001, Visible = false }),
+            label = create("Text", { Text = "naska.ui | @" .. plr.Name, Color = self.colors.text, Size = 17.5, ZIndex = 2002, Visible = false })
+        }
+
+        self._dcache = {main,main_outline,mantle,text,gradient,gradient_outline,resize_handle}
+
+        self.picker = {
+            active = nil,
+            h = 0, s = 0, v = 1,
+            container = create("Square", {Filled = true, Color = rgb(100, 100, 100), ZIndex = 50, Visible = false}),
+            outline = nil,
+            hue_bar = {},
+            sv_underlay = createHorizontalGradient({Size = v2(140, 140), Position = v2(0,0)}, rgb(255,255,255), rgb(255,0,0), 140),
+            sv_overlay = createVerticalGradientAlpha({Size = v2(140, 140), Position = v2(0,0)}, rgb(0,0,0), 0, 1, 140),
+            pointer = create("Circle", {Radius = 4, Filled = false, Thickness = 2, Color = rgb(255, 255, 255), ZIndex = 55, Visible = false}),
+            hue_indicator = create("Square", {Size = v2(2, 15), Filled = true, Color = rgb(255, 255, 255), ZIndex = 55, Visible = false}),
+        }
+
+        self.picker.sv_underlay.ZIndex = 51
+        self.picker.sv_overlay.ZIndex = 52
+        self.picker.hue_indicator.ZIndex = 55
+
+        self.picker.outline = createOutline(self.picker.container, self.colors.crust, 1)
+        self.picker.outline.ZIndex = 50
+        self.picker.outline.Filled = false
+
+        local hue_colors = {
+            rgb(255,0,0), rgb(255,255,0), rgb(0,255,0), rgb(0,255,255), rgb(0,0,255), rgb(255,0,255), rgb(255,0,0)
+        }
+        for i=1, 6 do
+            self.picker.hue_bar[i] = createHorizontalGradient({Size = v2(140/6, 15), Visible = false}, hue_colors[i], hue_colors[i+1], 30)
+            self.picker.hue_bar[i].ZIndex = 51
+        end
+
+        self.notifications = {}
+        self.notifications_spawned = 0
+
+        for i, v in self._dcache do
+            v.Transparency = 1
+        end
+
+        self.overlay = create("Square", {
+            Filled = true,
+            Color = rgb(0,0,0),
+            ZIndex = -10,
+            Visible = false,
+            Transparency = 0
+        })
+
+        if uis and uis.InputChanged then
+            uis.InputChanged:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseWheel and self.open then
+                    local m = mp()
+                    for _, tab in ipairs(self.tabs) do
+                        if self.tabs[self.currenttab] == tab then
+                            for _, section in ipairs(tab.sections) do
+                                if mousebound(section.section_container.Position, section.section_container.Size) then
+                                    local sub = section.sections[section.index]
+                                    if sub then
+                                        local max_scroll = math.max(0, sub.total_height - (section.section_container.Size.Y - section.buttonbg.Size.Y - 10))
+                                        sub.scroll = math.clamp(sub.scroll - (input.Position.Z * 20), 0, max_scroll)
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+
+        if false and uis and uis.InputBegan then
+            uis.InputBegan:Connect(function(input, gameProcessed)
+                if self.focused_textbox then
+                    local textbox = self.focused_textbox
+
+                    if input.UserInputType == Enum.UserInputType.Keyboard then
+                        local key = input.KeyCode
+                        print("DEBUG: [InputBegan] Key:", key, "GameProcessed:", gameProcessed)
+
+                        if key == Enum.KeyCode.Return or key == Enum.KeyCode.KeypadEnter or key == Enum.KeyCode.Escape then
+                            print("DEBUG: Unfocusing via Key")
+                            self.focused_textbox.focused = false
+                            self.focused_textbox = nil
+                            return
+                        end
+
+                        if key == Enum.KeyCode.Backspace then
+                            if #textbox.text > 0 then
+                                textbox.text = string.sub(textbox.text, 1, -2)
+                                if textbox.callback then textbox.callback(textbox.text) end
+                            end
+                            return
+                        end
+
+                        local char = uis:GetStringForKeyCode(key)
+                        print("DEBUG: GetStringForKeyCode returned:", tostring(char))
+                        if key == Enum.KeyCode.Space then char = " " end
+
+                        if char and #char > 0 then
+                            local shift = uis:IsKeyDown(Enum.KeyCode.LeftShift) or uis:IsKeyDown(Enum.KeyCode.RightShift)
+
+                            if string.match(char, "%a") then
+                                if not shift then
+                                    char = string.lower(char)
+                                else
+                                    char = string.upper(char)
+                                end
+                            end
+
+                            if string.match(char, "[%w%p%s]") then
+                                textbox.text = textbox.text .. char
+                                if textbox.callback then textbox.callback(textbox.text) end
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+
+        return self
+    end
+
+    local lastRefresh = clock()
+    function ui:step()
+
+        lastRefresh = clock()
+
+        local delta = clock() - self._last
+        self._last = clock()
+
+        local m = mp()
+
+        setrobloxinput(not self.open)
+
+        for i, v in self.keys do
+            local keydown = iskeypressed(v.mem)
+            if keydown then
+                if not v.hold and not v.click then
+                    v.click = true
+                else
+                    v.click = false
+                end
+
+                v.hold = true
+            else
+                v.hold = false
+            end
+        end
+
+        if self.keys[self.closebind].click then self.open = not self.open end
+
+        if not self.open then self.keys.mouse1.click = false self.keys.mouse1.hold = false end
+
+        if self.focused_textbox then
+            local textbox = self.focused_textbox
+
+            if self.keys.return_key.click or self.keys.escape.click or self.keys.mouse1.click then
+                self.focused_textbox.focused = false
+                self.focused_textbox = nil
+            else
+
+                if self.keys.backspace.click or (self.keys.backspace.hold and clock() > (self.bs_timer or 0)) then
+                    if self.keys.backspace.click then
+                        self.bs_timer = clock() + 0.4
+                    else
+                        self.bs_timer = clock() + 0.05
+                    end
+
+                    if #textbox.text > 0 then
+                        textbox.text = string.sub(textbox.text, 1, -2)
+                        if textbox.callback then textbox.callback(textbox.text) end
+                        self._needs_save = true
+                    end
+                end
+
+                local shift = self.keys.leftshift.hold or self.keys.rshift.hold
+                for keyname, keydata in pairs(self.keys) do
+                    if keydata.click or (keydata.hold and clock() > (self.key_timers[keyname] or 0)) then
+                        if keydata.click then
+                            self.key_timers[keyname] = clock() + 0.4
+                        else
+                            self.key_timers[keyname] = clock() + 0.05
+                        end
+
+                        local char = nil
+                        if #keyname == 1 then
+                            char = keyname
+                        elseif keyname:match("numpad%d") then
+                            char = keyname:sub(7)
+                        elseif keyname == "space" then char = " "
+                        elseif keyname == "minus" then char = "-"
+                        elseif keyname == "equals" then char = "="
+                        elseif keyname == "period" then char = "."
+                        elseif keyname == "comma" then char = ","
+                        elseif keyname == "slash" then char = "/"
+                        elseif keyname == "semicolon" then char = ";"
+                        elseif keyname == "quote" then char = "'"
+                        elseif keyname == "lbracket" then char = "["
+                        elseif keyname == "rbracket" then char = "]"
+                        elseif keyname == "backslash" then char = "\\"
+                        end
+
+                        if char then
+
+                            if shift then
+                                if char:match("%a") then char = char:upper() end
+                                local shifts = {
+                                    ["1"]="!", ["2"]="@", ["3"]="#", ["4"]="$", ["5"]="%", ["6"]="^", ["7"]="&", ["8"]="*", ["9"]="( ", ["0"]=")",
+                                    ["-"]="_", ["="]="+", ["["]="{", ["]"]="}", [";"]=":", ["'"]='"', [","]="<", ["."]=">", ["/"]="?", ["\\"]="|"
+                                }
+                                if shifts[char] then char = shifts[char] end
+                            end
+
+                            textbox.text = textbox.text .. char
+                            print("DEBUG: Polled Input: " .. char)
+                            if textbox.callback then textbox.callback(textbox.text) end
+                            self._needs_save = true
+                        end
+                    end
+                end
+            end
+        end
+
+        local function fetchtrans(transparency)
+            local target = self.transparency
+            if math.abs(transparency - target) < 0.001 then return target end
+            return lerp(transparency,target,getLerp(.35,delta))
+        end
+
+        local _drawings = self._dcache
+        local _colors = self.colors
+
+        local main = _drawings[1]
+        local main_outline = _drawings[2]
+        local mantle = _drawings[3]
+        local title_text = _drawings[4]
+        local gradient = _drawings[5]
+        local gradient_out = _drawings[6]
+        local resize_handle = _drawings[7]
+
+        local targetOverlayTrans = self.open and 0.65 or 0
+        if math.abs(self.overlay.Transparency - targetOverlayTrans) > 0.001 then
+            self.overlay.Transparency = lerp(self.overlay.Transparency, targetOverlayTrans, getLerp(.15, delta))
+        else
+            self.overlay.Transparency = targetOverlayTrans
+        end
+
+        change(self.overlay, {
+            Position = v2(0,0),
+            Size = workspace.CurrentCamera.ViewportSize,
+            Visible = self.overlay.Transparency > 0
+        })
+
+        if self.open then
+            local handle_pos = v2(self.x + self.w - 10, self.y + self.h - 10)
+            if mousebound(handle_pos, v2(10, 10)) and self.keys.mouse1.click then
+                self._resizing = true
+            end
+
+            if not self.keys.mouse1.hold then
+                self._resizing = false
+            end
+
+            if self._resizing then
+                self.w = math.max(400, m.X - self.x)
+                self.h = math.max(self.minH or 300, m.Y - self.y)
+            end
+        end
+
+        if self.watermark_enabled ~= false then
+            local wm_text = self.watermark.label.Text
+            local tw, th = textbound(wm_text)
+            local box_size = v2(tw + 30, 30)
+            local pos = v2(workspace.CurrentCamera.ViewportSize.X - box_size.X - 20, 20)
+
+            change(self.watermark.container, { Size = box_size, Position = pos, Visible = true, Transparency = 1 })
+            change(self.watermark.outline, { Size = box_size + v2(2,2), Position = pos - v2(1,1), Visible = true, Transparency = 1 })
+            change(self.watermark.accent_bar, { Size = v2(box_size.X, 2), Position = pos, Visible = true, Transparency = 1, Color = self.colors.accent })
+            change(self.watermark.label, { Position = pos + v2(15, (box_size.Y / 2) - 8), Visible = true, Transparency = 1, Color = _colors.text })
+        else
+            change(self.watermark.container, { Visible = false })
+            change(self.watermark.outline, { Visible = false })
+            change(self.watermark.accent_bar, { Visible = false })
+            change(self.watermark.label, { Visible = false })
+        end
+
+        change(main, {
+            Position = v2(self.x,self.y),
+            Size = v2(self.w,self.h),
+            Transparency = fetchtrans(main.Transparency)
+        })
+
+        change(main_outline,{
+            Position = v2(self.x,self.y)-(v2(.5,.5)*self.border),
+            Size = v2(self.w+self.border,self.h+self.border)
+        })
+
+        change(resize_handle, {
+            Position = v2(self.x + self.w - 10, self.y + self.h - 10),
+            Visible = self.open,
+            Transparency = fetchtrans(0.5)
+        })
+        change(title_text,{
+            Position = v2(self.x+5, self.y+self.th/2-6)
+        })
+
+        change(mantle,{
+            Position = v2(self.x+self.padding/2, self.y+(self.th+self.taboffset)+self.padding/2),
+            Size = v2(self.w-self.padding,self.h-(self.th+self.taboffset)-self.padding)
+        })
+
+        if gradient then
+            change(gradient,{Position = v2(self.x,self.y), Size = v2(self.w,self.th)})
+        end
+
+        if gradient_out then
+            local thickness = gradient_out.Thickness or 1
+            change(gradient_out,{
+                From = v2(self.x,self.y+self.th+thickness),
+                To = v2(self.x+self.w,self.y+self.th+thickness),
+                Color = _colors.crust
+            })
+        end
+
+        for i,v in _drawings do
+            v.Transparency = fetchtrans(v.Transparency)
+        end
+
+        self.transparency = self.open and (self.customtransparency or 1) or 0
+
+        if mousebound(main.Position,v2(self.w,self.th)) and self.open then
+            if self.keys.mouse1.click then
+                self._dragging = true
+                self._dragoffset = m - v2(self.x,self.y)
+            end
+        end
+
+        if self._dragging then
+            if self.keys.mouse1.hold then
+                self.x = m.X - self._dragoffset.X
+                self.y = m.Y - self._dragoffset.Y
+            else
+                self._dragging = false
+            end
+
+            self.keys.mouse1.click = false
+        end
+
+        local tabWidth = (self.w - (self.padding * (#self.tabs + 1))) / math.max(#self.tabs, 1)
+        local tabHeight = self.taboffset - self.padding
+
+        for i, tab in self.tabs do
+            local tabX = self.x+self.padding+(i - 1)*(tabWidth + self.padding)
+            local tabY = self.y+self.th+self.padding+1
+
+            change(tab.button, {
+                Position = v2(tabX, tabY),
+                Size = v2(tabWidth, tabHeight-self.padding*2),
+                Transparency = fetchtrans(tab.button.Transparency),
+                ZIndex = 2
+            })
+
+            change(tab.buttonoutline, {
+                Position = tab.button.Position - v2(1, 1),
+                Size = tab.button.Size + v2(2,3),
+                Transparency = fetchtrans(tab.button.Transparency),
+                Color = _colors.crust
+            })
+
+            if mousebound(tab.button.Position,tab.button.Size) and self.keys.mouse1.click then
+                self.currenttab = i
+            end
+
+            change(tab.text, {
+                Position = centertext(tab.text.Text, tab.button.Position, tab.button.Size),
+                Transparency = fetchtrans(tab.text.Transparency),
+                Color = (self.currenttab == i and _colors.text or _colors.subtext1)
+            })
+
+            if self.currenttab == i then
+                for _, section in ipairs(tab.sections) do
+                    for _, d in ipairs(section._dcache) do d.Visible = true end
+                end
+                tab.button.ChangeColor(_colors.base,_colors.overlay)
+            else
+                tab.button.ChangeColor(_colors.mantle,_colors.crust)
+            end
+
+            if self.currenttab == i then
+
+                local column_offsets = {left = 0, right = 0}
+
+                for index,section in tab.sections do
+                    for i,v in section._dcache do
+                        v.Transparency = fetchtrans(v.Transparency)
+                    end
+
+                    local section_container = section.section_container
+                    local side = section.side or "left"
+                    local hasLeft = tab.side.left > 0
+                    local hasRight = tab.side.right > 0
+                    local sidesUsed = (hasLeft and 1 or 0) + (hasRight and 1 or 0)
+
+                    local m_width = mantle.Size.X or 0
+                    local width = (m_width / sidesUsed) - self.padding*2
+                    local sectionPadding = self.padding
+
+                    local xPos = sectionPadding + mantle.Position.X
+                    if sidesUsed > 1 and side == "right" then
+                        xPos = xPos + width + sectionPadding*2
+                    end
+
+                    local calculated_height = section.manual_height or (section.sections[section.index] and (section.sections[section.index].total_height + self.padding*2 + 15) or 100)
+                    local title_offset = 18
+                    local remaining_space = math.max(70, mantle.Size.Y - column_offsets[side] - title_offset)
+
+                    calculated_height = math.clamp(calculated_height, 70, remaining_space)
+
+                    change(section_container,{
+                        Position = v2(xPos, (self.padding+mantle.Position.Y) + column_offsets[side] + title_offset),
+                        Size = v2(width, calculated_height - self.padding*2),
+                        Color = _colors.base
+                    })
+
+                    column_offsets[side] = column_offsets[side] + calculated_height + title_offset
+
+                    change(section.section_outline,{
+                        Position = section_container.Position - v2(1, 1),
+                        Size = section_container.Size + v2(2,2),
+                        Color = _colors.crust
+                    })
+
+                    change(section.buttonbg,{
+                        Visible = false,
+                        Transparency = 0
+                    })
+                    change(section.button, {
+                        Visible = false,
+                        Transparency = 0
+                    })
+
+                    if #section.sections == 1 then
+                        local sub = section.sections[1]
+                        change(sub.button, { Visible = false })
+                        change(sub.buttontext, {
+                            Text = sub.name,
+                            Position = section_container.Position - v2(0, 16),
+                            Color = _colors.text,
+                            Visible = true,
+                            Transparency = fetchtrans(sub.buttontext.Transparency)
+                        })
+                    end
+
+                    for num, sub in section.sections do
+                        local section_items = sub.elements
+                        local selected = section.index == num
+
+                        local itemStartPosition = (section_container.Position.Y+self.padding+4)+1
+                        local clipping_min = section_container.Position.Y
+                        local clipping_max = section_container.Position.Y + section_container.Size.Y
+
+                        sub.total_height = 0
+
+                        for _, item in section_items do
+                            if not selected then
+                                item.ignoreVisible = true
+                                for i,v in item._dcache do
+                                    v.Visible = false
+                                end
+                                continue
+                            else
+                                item.ignoreVisible = false
+                            end
+
+                            local currentY = itemStartPosition - sub.scroll
+                            local itemHeight = item.height or 22
+                            if item.class == "slider" then itemHeight = 30 end
+                            if item.class == "dropdown" then itemHeight = 22 end
+
+                            local is_in_view = (currentY >= clipping_min - 2) and (currentY + itemHeight <= clipping_max + 2)
+
+                            for _, drawing in item._dcache do
+                                drawing.Visible = is_in_view
+                            end
+
+                            local type = item.class
+                            local callback = item.callback
+                            local drawings = item._dcache
+                            local value  =  item.value
+                            local containerSize = section_container.Size
+                            local containerPos = section_container.Position
+
+                            if type == "button" then
+                                local buttonbase = item.buttonbase
+                                local text = item.text
+                                local buttonoutline = item.buttonoutline
+
+                                local height = item.height
+                                local buttonWidth = containerSize.X - self.padding * 2
+
+                                change(buttonbase, {
+                                    Size = v2(buttonWidth-self.padding, height),
+                                    Position = v2(containerPos.X + self.padding + 1, currentY),
+                                    Transparency = fetchtrans(buttonbase.Transparency)
+                                })
+
+                                local is_hovering = is_in_view and mousebound(buttonbase.Position,buttonbase.Size)
+                                local targetColorStart, targetColorEnd
+
+                                if is_hovering then
+                                    text.Color = self.colors.accent
+                                    if self.keys.mouse1.click then
+                                        if item.last_click_state ~= "clicked" then
+                                            item.last_click_state = "clicked"
+                                            item.callback()
+                                        end
+                                        targetColorStart, targetColorEnd = self.colors.accent, self.colors.crust
+                                    else
+                                        item.last_click_state = "hover"
+                                        targetColorStart, targetColorEnd = self.colors.surface1, self.colors.surface0
+                                    end
+                                else
+                                    text.Color = _colors.text
+                                    item.last_click_state = "idle"
+                                    targetColorStart, targetColorEnd = self.colors.surface0, self.colors.mantle
+                                end
+
+                                if item.last_cs ~= targetColorStart or item.last_ce ~= targetColorEnd then
+                                    item.last_cs = targetColorStart
+                                    item.last_ce = targetColorEnd
+                                    buttonbase.ChangeColor(targetColorStart, targetColorEnd)
+                                end
+
+                                change(text,{
+                                    Position = centertext(text.Text,buttonbase.Position,buttonbase.Size),
+                                    Transparency = fetchtrans(text.Transparency)
+                                })
+
+                                change(buttonoutline, {
+                                    Position = buttonbase.Position - v2(1, 1),
+                                    Size = buttonbase.Size + v2(2, 3),
+                                    Transparency = fetchtrans(buttonoutline.Transparency),
+                                    Color = _colors.crust
+                                })
+
+                                if item.color_square then
+                                    local cs = item.color_square
+                                    change(cs, {
+                                        Position = v2(buttonbase.Position.X + buttonbase.Size.X - 16, buttonbase.Position.Y + (buttonbase.Size.Y / 2) - 6),
+                                        Visible = is_in_view,
+                                        Transparency = fetchtrans(cs.Transparency),
+                                        Color = item.color
+                                    })
+
+                                    if mousebound(cs.Position, cs.Size) and self.keys.mouse1.click then
+                                        self.keys.mouse1.click = false
+                                        self.picker.active = item
+                                        local h, s, v = rgbToHsv(item.color)
+                                        self.picker.h, self.picker.s, self.picker.v = h, s, v
+                                    end
+                                end
+
+                                itemStartPosition+=(item.height+self.padding*2)
+                                sub.total_height += (item.height+self.padding*2)
+                            elseif type == "toggle" then
+                                local togglebutton = item.togglebutton
+                                local outline = item.toggleoutline
+                                local text = item.text
+                                local statetext = item.statetext
+
+                                local height = item.height
+
+                                change(togglebutton,{
+                                    Position = v2(containerPos.X+self.padding+4, currentY + 4),
+                                    Transparency = fetchtrans(togglebutton.Transparency)
+                                })
+
+                                change(outline,{
+                                    Position = togglebutton.Position - v2(1,1),
+                                    Transparency = fetchtrans(outline.Transparency),
+                                    Color = _colors.crust
+                                })
+
+                                change(text, {
+                                    Position = v2(togglebutton.Position.X + 18, togglebutton.Position.Y - 1),
+                                    Transparency = fetchtrans(text.Transparency),
+                                    Color = _colors.text
+                                })
+
+                                local bind_str = (item.waiting and "..." or (item.bind and "["..item.bind:upper().."]" or "[-]"))
+                                local b_size = textbound(bind_str)
+                                local t_size = textbound(text.Text)
+
+                                change(statetext, {
+                                    Text = bind_str,
+                                    Position = v2(text.Position.X + t_size + 6, togglebutton.Position.Y - 1),
+                                    Transparency = fetchtrans(statetext.Transparency),
+                                    Color = _colors.subtext0
+                                })
+
+                                local is_hovering = is_in_view and (mousebound(togglebutton.Position - v2(9,9), v2(20,20)) or mousebound(text.Position, v2(t_size)))
+                                local is_bind_hovering = is_in_view and mousebound(statetext.Position, v2(b_size, 15))
+
+                                if is_hovering and self.keys.mouse1.click then
+                                    item.state = not item.state
+                                    item.callback(item.state)
+                                    self:notify((item.state and "Enabled " or "Disabled ") .. item.name)
+                                    self._needs_save = true
+                                elseif is_bind_hovering and self.keys.mouse1.click then
+                                    self.keys.mouse1.click = false
+                                    item.waiting = true
+                                end
+
+                                if item.waiting then
+                                    for key, variable in self.keys do
+                                        if variable.click then
+                                            if key == "backspace" or key == "delete" then
+                                                item.bind = nil
+                                            else
+                                                item.bind = key
+                                            end
+                                            item.waiting = false
+                                            variable.click = false
+                                            self._needs_save = true
+                                        end
+                                    end
+                                elseif item.bind and self.keys[item.bind] and self.keys[item.bind].click then
+                                    item.state = not item.state
+                                    item.callback(item.state)
+                                    self:notify((item.state and "Enabled " or "Disabled ") .. item.name)
+                                    self._needs_save = true
+                                end
+
+                                text.Color = _colors.text
+
+                                local targetColor = item.state and self.colors.accent or self.colors.mantle
+
+                                if item.last_color ~= targetColor then
+                                    item.last_color = targetColor
+                                    togglebutton.Color = targetColor
+                                end
+
+                                if item.color_square then
+                                    local cs = item.color_square
+                                    change(cs, {
+                                        Position = v2(containerPos.X + containerSize.X - 18, togglebutton.Position.Y),
+                                        Visible = is_in_view,
+                                        Transparency = fetchtrans(cs.Transparency),
+                                        Color = item.color
+                                    })
+
+                                    if mousebound(cs.Position, cs.Size) and self.keys.mouse1.click then
+                                        self.keys.mouse1.click = false
+                                        self.picker.active = item
+                                        local h, s, v = rgbToHsv(item.color)
+                                        self.picker.h, self.picker.s, self.picker.v = h, s, v
+                                    end
+                                end
+
+                                itemStartPosition+=(22)
+                                sub.total_height += 22
+                            elseif type == "textbox" then
+                                local box = item.box
+                                local outline = item.outline
+                                local label = item.label
+                                local value = item.value
+
+                                change(box,{
+                                    Position = v2(containerPos.X + self.padding, currentY + 25),
+                                    Size = v2(containerSize.X - self.padding*2, 20),
+                                    Transparency = fetchtrans(box.Transparency),
+                                    Color = item.focused and self.colors.surface1 or self.colors.mantle
+                                })
+
+                                change(outline,{
+                                    Position = box.Position - v2(1,1),
+                                    Size = box.Size + v2(2,3),
+                                    Transparency = fetchtrans(outline.Transparency),
+                                    Color = item.focused and self.colors.accent or self.colors.crust
+                                })
+
+                                change(label,{
+                                    Position = v2(box.Position.X, box.Position.Y - 18),
+                                    Transparency = fetchtrans(label.Transparency),
+                                    Color = _colors.text
+                                })
+
+                                local display_text = (#item.text > 0 and item.text) or item.placeholder
+                                change(value,{
+                                    Text = display_text,
+                                    Position = v2(box.Position.X + 5, centertext(display_text, box.Position, box.Size).Y),
+                                    Transparency = fetchtrans(value.Transparency),
+                                    Color = (#item.text > 0 and _colors.text) or _colors.subtext0
+                                })
+
+                                if is_in_view and mousebound(box.Position, box.Size) and self.keys.mouse1.click then
+
+                                    if self.focused_textbox and self.focused_textbox ~= item then
+                                        self.focused_textbox.focused = false
+                                    end
+
+                                    self.focused_textbox = item
+                                    item.focused = true
+                                    self.keys.mouse1.click = false
+                                    print("DEBUG: Focused " .. item.name .. " (Manual)")
+                                elseif self.keys.mouse1.click and self.focused_textbox == item then
+
+                                    self.focused_textbox = nil
+                                    item.focused = false
+                                    print("DEBUG: Unfocused by click")
+                                end
+
+                                itemStartPosition+=(50)
+                                sub.total_height += 50
+                            elseif type == "keybind" then
+                                local button = item.button
+                                local outline = item.outline
+                                local text = item.text
+                                local statetext = item.statetext
+
+                                local height = item.height
+
+                                local is_waiting = item.waiting
+                                local bind_str = (is_waiting and "..." or item.state)
+                                local bind_width = textbound(bind_str) + 10
+
+                                change(button,{
+                                    Size = v2(bind_width, height),
+                                    Position = v2(containerPos.X + containerSize.X - bind_width - self.padding - 5, currentY),
+                                    Transparency = fetchtrans(button.Transparency)
+                                })
+                                change(outline,{
+                                    Position = button.Position - v2(1, 1),
+                                    Size = button.Size + v2(2,2),
+                                    Transparency = fetchtrans(outline.Transparency)
+                                })
+                                change(text, {
+                                    Position = v2(containerPos.X + self.padding + 5, centertext(text.Text,button.Position,button.Size).Y),
+                                    Transparency = fetchtrans(text.Transparency),
+                                })
+                                change(statetext, {
+                                    Position = centertext(statetext.Text,button.Position,button.Size),
+                                    Transparency = fetchtrans(statetext.Transparency),
+                                    Text = bind_str
+                                })
+
+                                if is_in_view and mousebound(button.Position,button.Size) then
+                                    if self.keys.mouse1.click then
+                                        self.keys.mouse1.click = false
+                                        item.waiting = true
+                                    end
+                                end
+
+                                if item.waiting then
+                                    for key,variable in self.keys do
+                                        if variable.click then
+                                            item.state = key
+                                            item.waiting = false
+                                            variable.click = false
+
+                                            item.onset(item.state)
+                                            self._needs_save = true
+                                        end
+                                    end
+                                else
+                                    if self.keys[item.state] and self.keys[item.state].click then
+                                        item.callback()
+                                    end
+                                end
+
+                                itemStartPosition+=(height+self.padding*2)
+                                sub.total_height += (height+self.padding*2)
+                            elseif type == "dropdown" then
+                                local button = item.button
+                                local outline = item.buttonoutline
+                                local labeltext = item.labeltext
+                                local valuetext = item.valuetext
+                                local arrow = item.arrow
+
+                                local height = item.height
+                                local buttonWidth = containerSize.X - self.padding * 2
+
+                                change(button, {
+                                    Size = v2(buttonWidth-self.padding, height),
+                                    Position = v2(containerPos.X + self.padding + 1, currentY),
+                                    Transparency = fetchtrans(button.Transparency)
+                                })
+
+                                change(outline, {
+                                    Position = button.Position - v2(1, 1),
+                                    Size = button.Size + v2(2, 3),
+                                    Transparency = fetchtrans(outline.Transparency)
+                                })
+
+                                change(labeltext, {
+                                    Position = v2(button.Position.X + 5, centertext(labeltext.Text, button.Position, button.Size).Y),
+                                    Transparency = fetchtrans(labeltext.Transparency)
+                                })
+
+                                local valueWidth = textbound(item.selected)
+                                change(valuetext, {
+                                    Text = item.selected,
+                                    Position = v2(
+                                        button.Position.X + button.Size.X - valueWidth - 15,
+                                        centertext(valuetext.Text, button.Position, button.Size).Y
+                                    ),
+                                    Transparency = fetchtrans(valuetext.Transparency)
+                                })
+
+                                change(arrow, {
+                                    Text = item.open and "-" or "+",
+                                    Position = v2(
+                                        button.Position.X + button.Size.X - 10,
+                                        centertext(arrow.Text, button.Position, button.Size).Y
+                                    ),
+                                    Transparency = fetchtrans(arrow.Transparency)
+                                })
+
+                                if is_in_view and mousebound(button.Position, button.Size) and self.keys.mouse1.click then
+                                    item.open = not item.open
+                                end
+
+                                if item.open then
+                                    local optionHeight = 16
+                                    local totalHeight = #item.options * optionHeight
+
+                                    change(item.optionsContainer, {
+                                        Position = v2(button.Position.X, button.Position.Y + height + 2),
+                                        Size = v2(buttonWidth-self.padding, totalHeight+self.padding*2),
+                                        Transparency = fetchtrans(item.optionsContainer.Transparency),
+                                        Visible = is_in_view
+                                    })
+
+                                    change(item.optionsOutline, {
+                                        Position = item.optionsContainer.Position - v2(1, 1),
+                                        Size = item.optionsContainer.Size + v2(2, 2),
+                                        Transparency = fetchtrans(item.optionsOutline.Transparency),
+                                        Visible = is_in_view
+                                    })
+
+                                    for i, v in ipairs(item.optionElements) do
+                                        local centered = centertext(v.Text, item.optionsContainer.Position, item.optionsContainer.Size)
+                                        change(v, {
+                                            Position = v2(centered.X, item.optionsContainer.Position.Y + self.padding + (optionHeight * (i - 1))),
+                                            Transparency = fetchtrans(v.Transparency),
+                                            Color = (item.selected == v.Text and _colors.text or _colors.subtext1),
+                                            ZIndex = 11,
+                                            Visible = is_in_view and item.open
+                                        })
+
+                                        if mousebound(v.Position, v2(item.optionsContainer.Size.X, optionHeight)) and self.keys.mouse1.click and item.selected ~= v.Text then
+                                            item.selected = v.Text
+                                            item.callback(item.selected)
+                                            item.open = false
+                                            self._needs_save = true
+                                        end
+                                    end
+                                else
+                                    change(item.optionsContainer,{
+                                        Transparency = 0,
+                                        Visible = false
+                                    })
+                                    change(item.optionsOutline,{
+                                        Transparency = 0,
+                                        Visible = false
+                                    })
+
+                                    for i,v in item.optionElements do
+                                        change(v,{
+                                            Transparency = 0,
+                                            Visible = false
+                                        })
+                                    end
+                                end
+
+                                itemStartPosition+=(height+self.padding*2)
+                                sub.total_height += (height+self.padding*2)
+                            elseif type == "slider" then
+                                local sliderbackground = item.sliderbackground
+                                local slidetext = item.text
+                                local slideoutline = item.slideroutline
+                                local slideframe = item.slideframe
+
+                                    local height = item.height
+                                local slider_h = 12
+                                change(sliderbackground,{
+                                    Size = v2(containerSize.X - self.padding * 2, slider_h),
+                                    Position = v2(containerPos.X + self.padding + 1, currentY + 16),
+                                    Transparency = fetchtrans(sliderbackground.Transparency),
+                                    Color = _colors.mantle
+                                })
+
+                                change(slideoutline,{
+                                    Position = sliderbackground.Position - v2(1, 1),
+                                    Size = sliderbackground.Size + v2(2,2),
+                                    Transparency = fetchtrans(slideoutline.Transparency),
+                                    Color = _colors.crust
+                                })
+
+                                local ratio = (item.value-item.min)/(item.max-item.min)
+                                change(slideframe,{
+                                    Size = v2((math.clamp(ratio*sliderbackground.Size.X, 0, sliderbackground.Size.X)), slider_h),
+                                    Position = sliderbackground.Position,
+                                    Transparency = fetchtrans(slideframe.Transparency),
+                                    Color = _colors.accent
+                                })
+
+                                change(slidetext,{
+                                    Position = v2(sliderbackground.Position.X, sliderbackground.Position.Y - 14),
+                                    Transparency = fetchtrans(slidetext.Transparency),
+                                    Color = _colors.text,
+                                    ZIndex = 6,
+                                    Text = item.name
+                                })
+
+                                local val_str = tostring(item.value)..item.suffix
+                                local val_x = textbound(val_str)
+                                change(item.valuetext, {
+                                    Text = val_str,
+                                    Position = v2(sliderbackground.Position.X + sliderbackground.Size.X - val_x, sliderbackground.Position.Y - 14),
+                                    Visible = is_in_view,
+                                    Color = _colors.subtext0,
+                                    Transparency = fetchtrans(item.valuetext.Transparency)
+                                })
+
+                                if is_in_view and self.keys.mouse1.hold and mousebound(sliderbackground.Position - v2(0,5),sliderbackground.Size + v2(0,10)) then
+                                    local fraction = math.clamp((mouse.X - sliderbackground.Position.X), 0, sliderbackground.Size.X) / sliderbackground.Size.X
+                                    local factor = math.floor((item.max - item.min) * fraction / item.step + 0.5)
+                                    local oldval = item.value
+                                    item.value = truncate(item.min + factor * item.step,countDecimalPlaces(item.step))
+                                    if item.value ~= oldval then
+                                        item.callback(item.value)
+                                        self._needs_save = true
+                                    end
+                                end
+                                    itemStartPosition+=(28)
+                                    sub.total_height += 28
+                            end
+                        end
+
+                        if #section.sections > 1 then
+                            local sbuttonwidth = textbound(sub.name)*1.1
+                            local offset = section.sections[num-1] and (section.sections[num-1].button.Position.X+section.sections[num-1].button.Size.X) or section_container.Position.X
+                            change(sub.button,{
+                                Position = v2(offset,section_container.Position.Y),
+                                Size = v2(sbuttonwidth+3,section.buttonbg.Size.Y-2),
+                                Visible = true,
+                                Transparency = fetchtrans(sub.button.Transparency)
+                            })
+
+                            change(sub.buttontext,{
+                                Text = sub.name,
+                                Position = centertext(sub.name, sub.button.Position, sub.button.Size),
+                                Color = _colors.text,
+                                Visible = true,
+                                Transparency = fetchtrans(sub.buttontext.Transparency)
+                            })
+
+                            local targetColorStart = _colors.mantle
+                            local targetColorEnd = (section.index == num) and _colors.base or _colors.crust
+
+                            if sub.last_cs ~= targetColorStart or sub.last_ce ~= targetColorEnd then
+                                sub.last_cs = targetColorStart
+                                sub.last_ce = targetColorEnd
+                                sub.button.ChangeColor(targetColorStart, targetColorEnd)
+                            end
+
+                            if mousebound(sub.button.Position, sub.button.Size) and self.keys.mouse1.click then
+                                section.index = num
+                            end
+                    end
+                end
+                local max_content_height = math.max(column_offsets.left, column_offsets.right)
+                self.minH = max_content_height + (self.th + self.taboffset) + self.padding * 2 + 35
+
+                if self.minH > self.h then
+                    self.h = lerp(self.h, self.minH, getLerp(0.1, delta))
+                end
+            end
+            else
+                setvisible(tab.sections, false)
+                end
+            end
+
+            if not self._initialized_autosave then
+                self._initialized_autosave = true
+                pcall(function()
+                    if isfile("naska/autosave.cfg") then
+                        local content = readfile("naska/autosave.cfg")
+                        local success, data = pcall(function() return http:JSONDecode(content) end)
+                        if success and data[tostring(game.PlaceId)] then
+                            self:set_config(data[tostring(game.PlaceId)])
+                        end
+                    end
+                end)
+            end
+
+            if self._needs_save then
+                pcall(function()
+                    local full_data = {}
+                    if isfile("naska/autosave.cfg") then
+                        local content = readfile("naska/autosave.cfg")
+                        local success, data = pcall(function() return http:JSONDecode(content) end)
+                        if success then full_data = data end
+                    end
+                    full_data[tostring(game.PlaceId)] = self:get_config()
+                    if not isfolder("naska") then makefolder("naska") end
+                    writefile("naska/autosave.cfg", http:JSONEncode(full_data))
+                end)
+                self._needs_save = false
+            end
+
+            local picker = self.picker
+            if picker.active then
+                local p_size = v2(160, 185)
+                local p_pos = v2(self.x + self.w + 10, self.y)
+
+                if p_pos.X + p_size.X > workspace.CurrentCamera.ViewportSize.X then
+                    p_pos = v2(self.x - p_size.X - 10, self.y)
+                end
+
+                change(picker.container, {
+                    Position = p_pos,
+                    Size = p_size,
+                    Visible = true,
+                    Color = rgb(31, 31, 31),
+                    Transparency = fetchtrans(picker.container.Transparency)
+                })
+                change(picker.outline, {
+                    Position = p_pos - v2(1,1),
+                    Size = p_size + v2(2,2),
+                    Visible = true,
+                    Transparency = fetchtrans(picker.container.Transparency)
+                })
+
+                local sv_pos = p_pos + v2(10, 10)
+                local sv_size = v2(140, 140)
+
+                picker.sv_underlay:ChangeColor(rgb(255,255,255), hsvToRgb(picker.h, 1, 1))
+
+                change(picker.sv_underlay, {
+                    Position = sv_pos,
+                    Size = sv_size,
+                    Visible = true,
+                    Transparency = fetchtrans(picker.container.Transparency)
+                })
+                change(picker.sv_overlay, {
+                    Position = sv_pos,
+                    Size = sv_size + v2(1, 1),
+                    Visible = true,
+                    Transparency = fetchtrans(picker.container.Transparency)
+                })
+
+                local hue_pos = p_pos + v2(10, 160)
+                local hue_total_width = 140
+
+                for i=1, 6 do
+                    local segment = picker.hue_bar[i]
+                    local startX = math.floor((i-1) * hue_total_width / 6)
+                    local endX = math.floor(i * hue_total_width / 6)
+                    change(segment, {
+                        Position = hue_pos + v2(startX, 0),
+                        Size = v2(endX - startX, 15),
+                        Visible = true,
+                        Transparency = fetchtrans(segment.Transparency)
+                    })
+                end
+
+                change(picker.hue_indicator, {
+                    Position = hue_pos + v2(math.floor(picker.h * 138), 0),
+                    Visible = true,
+                    Transparency = fetchtrans(picker.hue_indicator.Transparency)
+                })
+
+                local m = mp()
+                if self.keys.mouse1.hold then
+                    if mousebound(sv_pos, sv_size) then
+                        picker.s = math.clamp((m.X - sv_pos.X) / 139, 0, 1)
+                        picker.v = 1 - math.clamp((m.Y - sv_pos.Y) / 139, 0, 1)
+                    elseif mousebound(hue_pos, v2(140, 15)) then
+                        picker.h = math.clamp((m.X - hue_pos.X) / 139, 0, 1)
+                    elseif not mousebound(p_pos, p_size) and self.keys.mouse1.click then
+                        picker.active = nil
+                    end
+
+                    if picker.active then
+                        picker.active.color = hsvToRgb(picker.h, picker.s, picker.v)
+                        if picker.active.callback then
+                            if picker.active.class == "toggle" then
+                                picker.active.callback(picker.active.state, picker.active.color)
+                            else
+                                picker.active.callback(picker.active.color)
+                            end
+                        end
+                        self._needs_save = true
+                    end
+                elseif self.keys.mouse1.click and not mousebound(p_pos, p_size) then
+                    picker.active = nil
+                end
+
+                    if picker.active then
+                        change(picker.pointer, {
+                            Position = sv_pos + v2(picker.s * 139, (1 - picker.v) * 139),
+                            Visible = true,
+                            Transparency = fetchtrans(picker.pointer.Transparency)
+                        })
+                    end
+                else
+                    change(picker.container, { Visible = false, Transparency = 0 })
+                    change(picker.outline, { Visible = false, Transparency = 0 })
+
+                    change(picker.sv_underlay, { Visible = false })
+                    change(picker.sv_overlay, { Visible = false })
+
+                    change(picker.pointer, { Visible = false, Transparency = 0 })
+                    change(picker.hue_indicator, { Visible = false, Transparency = 0 })
+                    for i=1, 6 do
+                        change(picker.hue_bar[i], { Visible = false, Transparency = 0 })
+                    end
+                end
+
+                local screen_size = workspace.CurrentCamera.ViewportSize
+                local notif_x = 20
+                local notif_y = 60
+                local notif_spacing = 10
+
+                local active_notifs = 0
+                for i, notif in ipairs(self.notifications) do
+                    local elapsed = clock() - notif.start_time
+                    local life_percent = math.clamp(elapsed / notif.duration, 0, 1)
+
+                    if life_percent < 1 then
+                        local alpha = 1
+                        if elapsed < 0.3 then
+                            alpha = elapsed / 0.3
+                        elseif elapsed > notif.duration - 0.3 then
+                            alpha = (notif.duration - elapsed) / 0.3
+                        end
+
+                        local tw, th = textbound(notif.text, 16)
+                        local box_size = v2(tw + 30, 35)
+                        local pos = v2(notif_x, notif_y + (active_notifs * (box_size.Y + notif_spacing)))
+
+                        if elapsed < 0.3 then
+                            pos = pos - v2((1-alpha) * 50, 0)
+                        end
+
+                        change(notif.drawings.container, { Size = box_size, Position = pos, Transparency = alpha, Visible = true })
+                        change(notif.drawings.outline, { Size = box_size + v2(2,2), Position = pos - v2(1,1), Transparency = alpha, Visible = true })
+                        change(notif.drawings.accent_bar, { Size = v2(box_size.X * (1 - life_percent), 2), Position = pos + v2(0, box_size.Y - 2), Transparency = alpha, Visible = true })
+                        change(notif.drawings.label, { Position = pos + v2(15, (box_size.Y / 2) - 7), Transparency = alpha, Visible = true })
+
+                        active_notifs = active_notifs + 1
+                    else
+
+                        for _, drawing in pairs(notif.drawings) do drawing:Remove() end
+                        table.remove(self.notifications, i)
+                    end
+                end
+            end
+
+            function ui:get_config()
+                local config = {
+                    elements = {},
+                    settings = {
+                        theme = self.theme,
+                        closebind = tostring(self.closebind):lower(),
+                        watermark = self.watermark_enabled
+                    }
+                }
+
+                for _, tab in ipairs(self.tabs) do
+                    for _, section in ipairs(tab.sections) do
+                        for _, sub in ipairs(section.sections) do
+                            for _, element in ipairs(sub.elements) do
+
+                                local id = string.format("%s/%s/%s/%s_%s_%d",
+                                    tab.name, section.name, sub.name,
+                                    (element.name or "element"),
+                                    (element.class or "item"),
+                                    (element.index or 0)
+                                )
+
+                                 if element.class == "toggle" then
+                                     config.elements[id] = element.state
+                                     if element.bind then
+                                         config.elements[id .. "_bind"] = element.bind
+                                     end
+                                elseif element.class == "slider" then
+                                    config.elements[id] = element.value
+                                elseif element.class == "dropdown" then
+                                    config.elements[id] = element.selected
+                                elseif element.class == "textbox" then
+                                    config.elements[id] = element.text
+                                elseif element.class == "keybind" then
+                                    config.elements[id] = element.state
+                                end
+
+                                if element.color then
+                                    config.elements[id .. "_color"] = {element.color.R, element.color.G, element.color.B}
+                                end
+                            end
+                        end
+                    end
+                end
+
+                return config
+            end
+
+            function ui:set_config(data)
+                if data.settings then
+                    if data.settings.theme and self.themes[data.settings.theme] then
+                        self.theme = data.settings.theme
+                        self.colors = self.themes[self.theme]
+                    end
+                    if data.settings.closebind then
+                        self.closebind = data.settings.closebind
+                    end
+                    if data.settings.watermark ~= nil then
+                        self.watermark_enabled = data.settings.watermark
+                    end
+                end
+
+                if data.elements then
+                    for _, tab in ipairs(self.tabs) do
+                        for _, section in ipairs(tab.sections) do
+                            for _, sub in ipairs(section.sections) do
+                                for _, element in ipairs(sub.elements) do
+
+                                    local id = string.format("%s/%s/%s/%s_%s_%d",
+                                        tab.name, section.name, sub.name,
+                                        (element.name or "element"),
+                                        (element.class or "item"),
+                                        (element.index or 0)
+                                    )
+                                    local val = data.elements[id]
+
+                                    if val ~= nil then
+                                         if element.class == "toggle" then
+                                             element.state = val
+                                             local bind_val = data.elements[id .. "_bind"]
+                                             if bind_val then
+                                                 element.bind = tostring(bind_val):lower()
+                                                 if element.statetext then
+                                                     element.statetext.Text = "[" .. tostring(element.bind):upper() .. "]"
+                                                 end
+                                             end
+                                        elseif element.class == "slider" then
+                                            element.value = val
+                                        elseif element.class == "dropdown" then
+                                            element.selected = val
+                                        elseif element.class == "textbox" then
+                                            element.text = val
+                                            if element.value then element.value.Text = tostring(val) end
+                                         elseif element.class == "keybind" then
+                                             element.state = tostring(val):lower()
+                                             if element.statetext then element.statetext.Text = tostring(element.state):upper() end
+                                         end
+
+                                        if element.callback and element.class ~= "keybind" then
+                                            pcall(element.callback, val)
+                                        end
+
+                                        if element.class == "keybind" and element.onset then
+                                            pcall(element.onset, val)
+                                        end
+                                    end
+
+                                    local col_val = data.elements[id .. "_color"]
+                                    if col_val and element.color_square then
+
+                                        element.color = Color3.new(col_val[1] or 1, col_val[2] or 1, col_val[3] or 1)
+                                        element.color_square.Color = element.color
+
+                                        if element.callback then
+                                            if element.class == "toggle" then
+                                                pcall(element.callback, element.state, element.color)
+                                            else
+                                                pcall(element.callback, element.color)
+                                            end
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+
+            function ui:save_config(name)
+                local success, data = pcall(function()
+                    return http:JSONEncode(self:get_config())
+                end)
+
+                if success then
+                    if not isfolder("naska") then makefolder("naska") end
+                    if not isfolder("naska/configs") then makefolder("naska/configs") end
+                    writefile("naska/configs/" .. name .. ".cfg", data)
+                    return true
+                end
+                return false
+            end
+
+            function ui:load_config(name)
+                if isfile("naska/configs/" .. name) then
+                    local content = readfile("naska/configs/" .. name)
+                    local success, data = pcall(function()
+                        return http:JSONDecode(content)
+                    end)
+
+                    if success then
+                        self:set_config(data)
+                        return true
+                    end
+                end
+                return false
+            end
+
+            function ui:notify(text, duration)
+
+                if #text > 40 then
+                    text = text:sub(1, 37) .. "..."
+                end
+
+                local notif = {
+                    text = text,
+                    duration = duration or 5,
+                    start_time = clock(),
+                    drawings = {
+                        container = create("Square", { Filled = true, Color = self.colors.surface0, ZIndex = 2000 }),
+                        outline = create("Square", { Filled = false, Color = self.colors.crust, ZIndex = 1999 }),
+                        accent_bar = create("Square", { Filled = true, Color = self.colors.accent, ZIndex = 2001 }),
+                        label = create("Text", { Text = text, Color = self.colors.text, Size = 16, ZIndex = 2002 })
+                    }
+                }
+                table.insert(self.notifications, notif)
+            end
+
+            function ui:tab(name)
+                local tab = {}
+
+                tab.tabindex = #self.tabs+1
+                tab.name = name
+                tab.button = createGradient({Size = v2(200,20), ZIndex = 3},self.colors.mantle,self.colors.crust,15)
+                tab.text = create("Text",{Text = tab.name, ZIndex = 4, Outline = false})
+                tab.buttonoutline = createOutline(tab.button,self.colors.crust,1)
+
+                tab.sections = {}
+                tab.side = {
+                    right = 0,
+                    left = 0
+                }
+                tab.menu = self
+
+                tab._dcache = {tab.button,tab.text,tab.buttonoutline}
+
+                tab.section = section
+
+                self.tabs[tab.tabindex] = tab
+
+                return tab
+            end
+
+            function addsection(self,name)
+                local section = {}
+
+                section.colors = self.colors
+                section.name = name
+                section.section_container = self.section_container
+                section.button = createGradient({Position = v2(),Size = v2()},self.colors.mantle,self.colors.base,25)
+                section.button.ZIndex = 4
+                section.buttontext = create("Text",{
+                    Text = name,
+                    Color = self.colors.text,
+                    ZIndex = 5,
+                    Outline = false
+                })
+
+                section.elements = {}
+                section.scroll = 0
+                section.total_height = 0
+                section.addbutton = button
+                section.addtoggle = toggle
+                section.addkeybind = keybind
+                section.adddropdown = dropdown
+                section.adddropdown = dropdown
+                section.addslider = slider
+
+                function section:clear()
+                    for i, v in pairs(self.elements) do
+                        if v._dcache then
+                            for _, drawing in pairs(v._dcache) do
+                                drawing:Remove()
+                            end
+                        end
+                    end
+                    self.elements = {}
+                    self.total_height = 0
+                    self.scroll = 0
+                end
+
+                section._dcache = {
+                    section.button,
+                    section.buttontext
+                }
+
+                table.insert(self.sections,section)
+
+                return section
+            end
+
+            function section(self,name,side)
+                local section = {}
+                local tabindex = self.tabindex
+
+                local side = side and "right" or "left"
+                local containerheight = self.menu._dcache[3].Size.Y
+
+                section.section_container = create("Square",{
+                    Filled = true,
+                    Color = self.menu.colors.base,
+                    ZIndex = 2
+                })
+                section.section_outline = createOutline(section.section_container,self.menu.colors.crust,1)
+
+                section.buttonbg = create("Square",{
+                    Filled = true,
+                    Color = self.menu.colors.crust,
+                    ZIndex = 3,
+                })
+
+                section.button = createGradient({Position = v2(),Size = v2()},self.menu.colors.mantle,self.menu.colors.base,25)
+                section.button.ZIndex = 4
+
+                section.buttontext = create("Text",{
+                    Text = name,
+                    Color = self.menu.colors.text,
+                    ZIndex = 5,
+                    Outline = false
+                })
+
+                self.side[side] += 1
+
+                section.colors = self.menu.colors
+                section.name = name
+                section.sections = {section}
+                section.index = 1
+                section.sideindex = self.side[side]-1
+                section.side = side
+                section.addsection = addsection
+
+                section.addbutton = button
+                section.addtoggle = toggle
+                section.addtextbox = textbox
+                section.addkeybind = keybind
+                section.adddropdown = dropdown
+                section.addslider = slider
+
+                function section:clear()
+                    for i, v in pairs(self.elements) do
+                        if v._dcache then
+                            for _, drawing in pairs(v._dcache) do
+                                drawing:Remove()
+                            end
+                        end
+                    end
+                    self.elements = {}
+                    self.total_height = 0
+                    self.scroll = 0
+                end
+
+                section.elements = {}
+                section.scroll = 0
+                section.total_height = 0
+
+                section._dcache = {
+                    section.section_container,
+                    section.section_outline,
+                    section.buttonbg,
+                    section.button,
+                    section.buttontext
+                }
+
+                table.insert(self.sections,section)
+
+                return section
+            end
+
+    local function cleancache(tbl, visited)
+        visited = visited or {}
+
+        if visited[tbl] then return end
+        visited[tbl] = true
+
+        for index, value in pairs(tbl) do
+            if type(value) == 'table' then
+                if value._dcache then
+                    for i,v in value._dcache do
+                        v:Remove()
+                    end
+                end
+
+                cleancache(value, visited)
+            end
+        end
+    end
+
+    function setvisible(tbl, visible, visited)
+        visited = visited or {}
+
+        if visited[tbl] then return end
+        visited[tbl] = true
+
+        for index, value in pairs(tbl) do
+            if type(value) == 'table' then
+                if visible and value.ignoreVisible then continue end
+                if value._dcache then
+                    for i,v in value._dcache do
+                        v.Visible = visible or false
+                    end
+                end
+
+                setvisible(value, visible, visited)
+            end
+        end
+    end
+
+    function button(self,data)
+        local name = data.Name
+        local callback = data.Callback
+
+        local button = {
+            class = "button",
+            callback = callback or function() end,
+            index = #self.elements+1,
+            height = 22,
+            hovering = false,
+            name = name
+        }
+
+        local offset = self.section_container.Position + v2(0,self.groupoffset)
+
+        button.text = create("Text",{Text = name, Color = self.colors.text,ZIndex = 5,Outline = false})
+        button.buttonbase = createGradient({Position = v2(),Size = v2()},self.colors.surface0,self.colors.mantle,25)
+        button.buttonbase.ZIndex = 4
+        button.buttonoutline = createOutline(button.buttonbase,self.colors.crust,3)
+
+        button._dcache = {
+            button.buttonbase,
+            button.buttonoutline,
+            button.text
+        }
+
+        if data.Color then
+            button.color = data.Color
+            button.color_square = create("Square", {
+                Size = v2(12, 12),
+                Filled = true,
+                Color = button.color,
+                ZIndex = 5
+            })
+            table.insert(button._dcache, button.color_square)
+        end
+
+        table.insert(self.elements,button)
+        return button
+    end
+
+    function toggle(self,data)
+        local name = data.Name
+        local callback = data.Callback
+        local enabled = data.Enabled
+
+        local toggle = {
+            height = 18,
+            class = "toggle",
+            callback = callback or function() end,
+            index = #self.elements+1,
+            state = data.Default or false,
+            name = name
+        }
+        local height = toggle.height
+
+        local offset = self.section_container.Position + v2(0,self.groupoffset)
+
+        toggle.text = create("Text",{Text = name, Color = self.colors.text,ZIndex = 5,Outline = false})
+        toggle.togglebutton = create("Square",{
+            Size = v2(12,12),
+            Filled = true,
+            Color = self.colors.mantle,
+            ZIndex = 4
+        })
+
+        toggle.toggleoutline = create("Square",{
+            Size = v2(14,14),
+            Filled = false,
+            Thickness = 1,
+            Color = self.colors.crust,
+            ZIndex = 4
+        })
+
+        toggle.statetext = create("Text",{Text = "[-]", Color = self.colors.subtext0,ZIndex = 5,Outline = false})
+        toggle._dcache = {
+            toggle.togglebutton,
+            toggle.toggleoutline,
+            toggle.text,
+            toggle.statetext
+        }
+
+        if data.Color then
+            toggle.color = data.Color
+            toggle.color_square = create("Square", {
+                Size = v2(12, 12),
+                Filled = true,
+                Color = toggle.color,
+                ZIndex = 5
+            })
+            table.insert(toggle._dcache, toggle.color_square)
+        end
+
+        table.insert(self.elements,toggle)
+        return toggle
+    end
+
+    function textbox(self,data)
+        local name = data.Name
+        local default = data.Default
+        local callback = data.Callback
+        local placeholder = data.Placeholder or ""
+
+        local textbox = {
+            height = 36,
+            index = #self.elements+1,
+            text = default or "",
+            placeholder = placeholder,
+            class = "textbox",
+            focused = false,
+            callback = callback or function() end,
+            name = name
+        }
+
+        local offset = self.section_container.Position + v2(0,self.groupoffset)
+
+        textbox.label = create("Text",{Text = name, Color = self.colors.text, ZIndex = 5, Outline = false})
+        textbox.value = create("Text",{Text = textbox.text, Color = self.colors.subtext0, ZIndex = 5, Outline = false})
+
+        textbox.box = createGradient({Position = v2(),Size = v2()},self.colors.mantle,self.colors.crust,25)
+        textbox.box.ZIndex = 4
+        textbox.outline = createOutline(textbox.box,self.colors.crust,3)
+
+        textbox._dcache = {
+            textbox.box,
+            textbox.outline,
+            textbox.label,
+            textbox.value
+        }
+
+        table.insert(self.elements,textbox)
+        return textbox
+    end
+
+    function keybind(self,data)
+        local name = data.Name
+        local default = data.Default
+        local onset = data.Changed
+        local callback = data.Callback
+
+        local keybind = {
+            height = 18,
+            index = #self.elements+1,
+            state = default or "",
+            class = "keybind",
+            onset = onset or function() end,
+            callback = callback or function() end,
+            name = name
+        }
+        local height = keybind.height
+
+        local offset = self.section_container.Position + v2(0,self.groupoffset)
+
+        keybind.text = create("Text",{Text = name, Color = self.colors.text,ZIndex = 5,Outline = false})
+        keybind.statetext = create("Text",{Text = default or "", Color = self.colors.subtext0,ZIndex = 5,Outline = false})
+        keybind.button = createGradient({Position = v2(),Size = v2()},self.colors.mantle,self.colors.crust,25)
+        keybind.button.ZIndex = 4
+
+        keybind.outline = createOutline(keybind.button,self.colors.crust,3)
+
+        keybind._dcache = {
+            keybind.button,
+            keybind.outline,
+            keybind.text,
+            keybind.statetext
+        }
+
+        table.insert(self.elements,keybind)
+        return keybind
+    end
+
+    function dropdown(self, data)
+        local name = data.Name
+        local options = data.Options or {}
+        local default = data.Default or (options[1] or "None")
+        local callback = data.Callback
+
+        local dropdown = {
+            class = "dropdown",
+            callback = callback or function() end,
+            options = options,
+            selected = default,
+            open = false,
+            height = 18,
+            index = #self.elements+1,
+            optionsContainer = nil,
+            optionsOutline = nil,
+            optionElements = {},
+            name = name
+        }
+
+        dropdown.button = createGradient({Position = v2(), Size = v2()},self.colors.mantle,self.colors.crust,15)
+        dropdown.button.ZIndex = 4
+        dropdown.buttonoutline = createOutline(dropdown.button, self.colors.crust, 3)
+        dropdown.labeltext = create("Text", {Text = name,Color = self.colors.text,ZIndex = 5,Outline = false})
+        dropdown.valuetext = create("Text", {Text = dropdown.selected,Color = self.colors.subtext0,ZIndex = 5,Outline = false})
+        dropdown.arrow = create("Text", {Color = self.colors.subtext1,ZIndex = 5,Outline = false,})
+
+        dropdown.optionsContainer = create("Square", {Filled = true,Color = self.colors.mantle,ZIndex = 10,Visible = false})
+        dropdown.optionsOutline = createOutline(dropdown.optionsContainer, self.colors.crust, 9)
+        dropdown.optionsOutline.Visible = false
+
+        for i,v in ipairs(options) do
+            dropdown.optionElements[i] = create("Text",{
+                Text = v,
+                ZIndex = 11,
+                Outline = false,
+            })
+        end
+
+        dropdown._dcache = {
+            dropdown.button,
+            dropdown.buttonoutline,
+            dropdown.labeltext,
+            dropdown.valuetext,
+            dropdown.arrow,
+            dropdown.optionsContainer,
+            dropdown.optionsOutline,
+        }
+
+        for i,v in dropdown.optionElements do
+            table.insert(dropdown._dcache,v)
+        end
+
+        table.insert(self.elements, dropdown)
+        return dropdown
+    end
+
+    function slider(self,data)
+        local name = data.Name
+        local callback = data.Callback
+
+        local slider = {
+            class = "slider",
+            callback = callback or function() end,
+            max = data.Max or 100,
+            min = data.Minimum or 0,
+            step = data.Step or 1,
+            suffix = data.Suffix or "",
+            index = #self.elements+1,
+            height = 18,
+            name = name,
+        }
+
+        slider.min-=slider.step
+        slider.value = data.Default or slider.min
+
+        local offset = self.section_container.Position + v2(0,self.groupoffset)
+
+        slider.text = create("Text",{Text = name, Color = self.colors.text,ZIndex = 5,Outline = false})
+        slider.sliderbackground = create("Square", {
+            Filled = true,
+            Color = self.colors.mantle,
+            ZIndex = 4,
+        })
+        slider.slideroutline = createOutline(slider.sliderbackground,self.colors.crust,3)
+
+        slider.slideframe = create("Square", {
+            Filled = true,
+            Color = self.colors.teal,
+            ZIndex = 5,
+        })
+
+        slider.valuetext = create("Text", {
+            Text = "0",
+            Color = self.colors.subtext0,
+            ZIndex = 5,
+            Outline = false
+        })
+
+        slider._dcache = {
+            slider.sliderbackground,
+            slider.slideroutline,
+            slider.text,
+            slider.slideframe,
+            slider.valuetext
+        }
+
+        table.insert(self.elements,slider)
+        return slider
+    end
+
+    function ui:Destroy()
+        cleancache(self)
+        if self.overlay then
+            self.overlay:Remove()
+        end
+        if self.watermark then
+            for _, drawing in pairs(self.watermark) do
+                drawing:Remove()
+            end
+        end
+        setrobloxinput(true)
+    end
+end
+
+
+return ui
+end)()
+
+-- -------------------------------------------------------------
+--  STEP 2 -- SERVICES
+-- -------------------------------------------------------------
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+
+-- -------------------------------------------------------------
+--  STEP 3 -- SHARED LOCALS
+-- -------------------------------------------------------------
+local LocalPlayer = Players.LocalPlayer
+local Mouse       = LocalPlayer:GetMouse()
+local Camera      = workspace.CurrentCamera
+
+-- Live character references - refreshed automatically on respawn
+local Character, Humanoid, HRP
+
+local function refreshChar()
+    Character = LocalPlayer.Character
+    if not Character then return end
+    Humanoid  = Character:FindFirstChildOfClass("Humanoid")
+    HRP       = Character:FindFirstChild("HumanoidRootPart")
+end
+
+refreshChar()
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(0.15)   -- wait for descendants to replicate
+    refreshChar()
+end)
+
+
+-- -------------------------------------------------------------
+--  CREATE WINDOW
+--  naska API:  ui:create(title, { theme, size })
+-- -------------------------------------------------------------
+local lib = ui:create("Matcha Tool", {
+    theme = "gamesense",                -- cyberpunk | gamesense | bitchbot
+    size  = Vector2.new(600, 420),
+})
+
+local tabClicker = lib:tab("auto clicker")
+local tabAFK     = lib:tab("anti-afk")
+local tabFly     = lib:tab("fly")
+local tabESP     = lib:tab("esp")
+local tabOpts    = lib:tab("options")
+
+
+-- ===============================================================
+--  AUTO CLICKER
+--
+--  *  Configurable CPS (clicks per second)
+--  *  Optional saved mouse position: when enabled, the cursor is
+--     warped to that position before every click via mousemoveabs()
+--  *  Toggle turns the Heartbeat loop on/off cleanly
+-- ===============================================================
+
+local AC = {
+    enabled = false,
+    cps     = 10,
+    savedX  = nil,   -- saved screen X (integer pixels)
+    savedY  = nil,   -- saved screen Y (integer pixels)
+    _conn   = nil,   -- RunService.Heartbeat connection
+    _acc    = 0,     -- frame accumulator (seconds)
+}
+
+local function ac_stopLoop()
+    if AC._conn then AC._conn:Disconnect(); AC._conn = nil end
+    AC._acc = 0
+end
+
+local function ac_startLoop()
+    ac_stopLoop()
+    local interval = 1 / math.clamp(AC.cps, 1, 100)
+
+    AC._conn = RunService.Heartbeat:Connect(function(dt)
+        if not AC.enabled then return end
+        AC._acc = AC._acc + dt
+        if AC._acc < interval then return end
+        AC._acc = 0
+
+        -- Warp cursor to the saved position if one is stored
+        if AC.savedX and AC.savedY then
+            mousemoveabs(AC.savedX, AC.savedY)
+        end
+
+        -- Fire an OS-level left-click through Matcha's input API
+        mouse1press()
+        task.wait(0.016)
+        mouse1release()
+    end)
+end
+
+-- -- Sections  (false = left col,  true = right col) ------------
+local secClickerMain = tabClicker:section("clicker settings", false)
+local secClickerPos  = tabClicker:section("mouse position",   true)
+
+secClickerMain:addtoggle{
+    Name     = "Enable Auto Clicker",
+    Default  = false,
+    Callback = function(v)
+        AC.enabled = v
+        if v then
+            ac_startLoop()
+            lib:notify("Auto Clicker ON")
+        else
+            ac_stopLoop()
+            lib:notify("Auto Clicker OFF")
+        end
+    end,
+}
+
+secClickerMain:addslider{
+    Name     = "Clicks Per Second",
+    Minimum  = 1,
+    Max      = 50,
+    Step     = 1,
+    Default  = 10,
+    Suffix   = " CPS",
+    Callback = function(v)
+        AC.cps = v
+        if AC.enabled then ac_startLoop() end   -- restart with new interval
+    end,
+}
+
+secClickerPos:addbutton{
+    Name     = "Save Current Mouse Position",
+    Callback = function()
+        AC.savedX = Mouse.X
+        AC.savedY = Mouse.Y
+        lib:notify(("Saved  X:%d  Y:%d"):format(AC.savedX, AC.savedY))
+    end,
+}
+
+secClickerPos:addbutton{
+    Name     = "Clear Saved Position",
+    Callback = function()
+        AC.savedX = nil
+        AC.savedY = nil
+        lib:notify("Saved position cleared")
+    end,
+}
+
+
+-- ===============================================================
+--  ANTI-AFK
+--
+--  Hooks LocalPlayer.Idled (fires after ~5 min of no input) and
+--  responds with a harmless OS key tap to reset the idle timer.
+-- ===============================================================
+
+local AFK = { enabled = false, _conn = nil }
+
+local function afk_stop()
+    if AFK._conn then AFK._conn:Disconnect(); AFK._conn = nil end
+end
+
+local function afk_start()
+    afk_stop()
+    AFK._conn = LocalPlayer.Idled:Connect(function()
+        if not AFK.enabled then return end
+        -- Scroll Lock (VK 0x91) is ignored by every Roblox game
+        -- but still counts as input to reset the kick timer.
+        keypress(0x91)
+        task.wait(0.05)
+        keyrelease(0x91)
+    end)
+end
+
+local secAFK = tabAFK:section("anti-afk settings", false)
+
+secAFK:addtoggle{
+    Name     = "Enable Anti-AFK",
+    Default  = false,
+    Callback = function(v)
+        AFK.enabled = v
+        if v then
+            afk_start()
+            lib:notify("Anti-AFK ON")
+        else
+            afk_stop()
+            lib:notify("Anti-AFK OFF")
+        end
+    end,
+}
+
+
+-- ===============================================================
+--  FLY  (BodyVelocity + BodyGyro, velocity lerped each Heartbeat
+--         for a smooth tween feel -- no abrupt jumps)
+-- ===============================================================
+
+local Fly = {
+    enabled = false,
+    speed   = 60,
+    _bv     = nil,   -- BodyVelocity
+    _bg     = nil,   -- BodyGyro
+    _conn   = nil,
+}
+
+local function fly_stop()
+    Fly.enabled = false
+    if Fly._conn then Fly._conn:Disconnect(); Fly._conn = nil end
+    if Fly._bv   then Fly._bv:Destroy();  Fly._bv  = nil end
+    if Fly._bg   then Fly._bg:Destroy();  Fly._bg  = nil end
+    if Humanoid  then Humanoid.PlatformStand = false end
+end
+
+local function fly_start()
+    fly_stop()
+    if not HRP or not Humanoid then
+        lib:notify("No character - try again after spawning")
+        return
+    end
+
+    Fly.enabled = true
+    Humanoid.PlatformStand = true
+
+    -- BodyVelocity controls actual movement
+    local bv    = Instance.new("BodyVelocity")
+    bv.Velocity = Vector3.new(0, 0, 0)
+    bv.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+    bv.P        = 9e4
+    bv.Parent   = HRP
+    Fly._bv     = bv
+
+    -- BodyGyro keeps the character facing the camera
+    local bg     = Instance.new("BodyGyro")
+    bg.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
+    bg.P         = 9e4
+    bg.D         = 200
+    bg.CFrame    = HRP.CFrame
+    bg.Parent    = HRP
+    Fly._bg      = bg
+
+    Fly._conn = RunService.Heartbeat:Connect(function(dt)
+        if not Fly.enabled then return end
+        if not HRP         then fly_stop(); return end
+
+        local camCF = Camera.CFrame
+        local dir   = Vector3.new(0, 0, 0)
+        local uis   = UserInputService
+
+        if uis:IsKeyDown(Enum.KeyCode.W) then dir = dir + camCF.LookVector  end
+        if uis:IsKeyDown(Enum.KeyCode.S) then dir = dir - camCF.LookVector  end
+        if uis:IsKeyDown(Enum.KeyCode.A) then dir = dir - camCF.RightVector end
+        if uis:IsKeyDown(Enum.KeyCode.D) then dir = dir + camCF.RightVector end
+        if uis:IsKeyDown(Enum.KeyCode.Space)       then
+            dir = dir + Vector3.new(0, 1, 0)
+        end
+        if uis:IsKeyDown(Enum.KeyCode.LeftShift) or
+           uis:IsKeyDown(Enum.KeyCode.LeftControl) then
+            dir = dir - Vector3.new(0, 1, 0)
+        end
+
+        -- Smooth lerp factor (higher multiplier = snappier acceleration)
+        local lf        = 1 - (0.5 ^ (dt * 12 * 60))
+        local targetVel = (dir.Magnitude > 0.001)
+                          and (dir.Unit * Fly.speed)
+                          or  Vector3.new(0, 0, 0)
+
+        bv.Velocity = bv.Velocity:Lerp(targetVel, lf)
+
+        -- Orient horizontally to camera look direction
+        local flat = Vector3.new(camCF.LookVector.X, 0, camCF.LookVector.Z)
+        if flat.Magnitude > 0.01 then
+            bg.CFrame = CFrame.new(Vector3.new(0, 0, 0), flat)
+        end
+    end)
+end
+
+local secFlyMain = tabFly:section("fly settings", false)
+local secFlyInfo = tabFly:section("controls",     true)
+
+secFlyMain:addtoggle{
+    Name     = "Enable Fly",
+    Default  = false,
+    Callback = function(v)
+        if v then
+            fly_start()
+            lib:notify("Fly ON")
+        else
+            fly_stop()
+            lib:notify("Fly OFF")
+        end
+    end,
+}
+
+secFlyMain:addslider{
+    Name     = "Speed",
+    Minimum  = 5,
+    Max      = 300,
+    Step     = 5,
+    Default  = 60,
+    Suffix   = " studs/s",
+    Callback = function(v) Fly.speed = v end,
+}
+
+-- Static info rows using zero-action buttons (naska has no label element)
+secFlyInfo:addbutton{ Name = "W / A / S / D  -- directional", Callback = function() end }
+secFlyInfo:addbutton{ Name = "Space           -- ascend",      Callback = function() end }
+secFlyInfo:addbutton{ Name = "LShift / LCtrl  -- descend",     Callback = function() end }
+
+
+-- ===============================================================
+--  CUSTOM ESP
+--
+--  User types an instance name that exists somewhere in workspace
+--  (searched recursively).  An optional display label can be set;
+--  if left blank the instance name is used.
+--
+--  Per frame (Heartbeat), for every tracked target:
+--    1. Locate the instance via workspace:FindFirstChild(name, true)
+--    2. Project its 8 bounding-box corners through WorldToScreen()
+--    3. Draw a 2-D rectangle (box outline)
+--    4. Draw name label above the box
+--    5. Draw distance in metres below the box
+--    6. If a Humanoid is found -> draw a vertical health bar on the
+--       left side of the box, coloured green->red by HP fraction.
+--       If no Humanoid -> no health bar drawn at all.
+--
+--  Click "X  [name]" buttons in the "active targets" section to
+--  remove individual targets.
+-- ===============================================================
+
+-- espTargets[instanceName] = { instanceName, displayName, drawings }
+local espTargets    = {}
+local ESP_ENABLED   = false
+local espRenderConn = nil
+
+-- -- Drawing factories ------------------------------------------
+local function newESPDrawings()
+    -- Hollow box outline
+    local box            = Drawing.new("Square")
+    box.Visible          = false
+    box.Filled           = false
+    box.Color            = Color3.fromRGB(255, 255, 255)
+    box.Transparency     = 1
+    box.Thickness        = 1.5
+    box.ZIndex           = 5
+
+    -- Instance / display name label (centred above box)
+    local nameText       = Drawing.new("Text")
+    nameText.Visible     = false
+    nameText.Text        = ""
+    nameText.Size        = 14
+    nameText.Font        = Drawing.Fonts.UI
+    nameText.Color       = Color3.fromRGB(255, 255, 255)
+    nameText.Transparency= 1
+    nameText.Outline     = true
+    nameText.Center      = true
+    nameText.ZIndex      = 6
+
+    -- Distance label (centred below box)
+    local distText       = Drawing.new("Text")
+    distText.Visible     = false
+    distText.Text        = ""
+    distText.Size        = 13
+    distText.Font        = Drawing.Fonts.UI
+    distText.Color       = Color3.fromRGB(185, 185, 185)
+    distText.Transparency= 1
+    distText.Outline     = true
+    distText.Center      = true
+    distText.ZIndex      = 6
+
+    -- Health bar background (dark, left of box)
+    local hpBarBG        = Drawing.new("Square")
+    hpBarBG.Visible      = false
+    hpBarBG.Filled       = true
+    hpBarBG.Color        = Color3.fromRGB(15, 15, 15)
+    hpBarBG.Transparency = 0.5
+    hpBarBG.ZIndex       = 5
+
+    -- Health bar foreground (coloured fill)
+    local hpBarFG        = Drawing.new("Square")
+    hpBarFG.Visible      = false
+    hpBarFG.Filled       = true
+    hpBarFG.Color        = Color3.fromRGB(0, 255, 80)
+    hpBarFG.Transparency = 1
+    hpBarFG.ZIndex       = 6
+
+    return {
+        box      = box,
+        nameText = nameText,
+        distText = distText,
+        hpBarBG  = hpBarBG,
+        hpBarFG  = hpBarFG,
+    }
+end
+
+local function removeESPDrawings(d)
+    d.box:Remove()
+    d.nameText:Remove()
+    d.distText:Remove()
+    d.hpBarBG:Remove()
+    d.hpBarFG:Remove()
+end
+
+local function hideESPDrawings(d)
+    d.box.Visible      = false
+    d.nameText.Visible = false
+    d.distText.Visible = false
+    d.hpBarBG.Visible  = false
+    d.hpBarFG.Visible  = false
+end
+
+-- -- 3-D bounding box -> 2-D screen rect ------------------------
+--  Projects all 8 corners of the part's OBB through WorldToScreen.
+--  Returns  minX, minY, maxX, maxY, worldPosition
+--  Returns  nil if the object cannot be rendered or is off-screen.
+local function getScreenBounds(obj)
+    local part
+    if obj:IsA("BasePart") then
+        part = obj
+    elseif obj:IsA("Model") then
+        part = obj.PrimaryPart
+              or obj:FindFirstChild("HumanoidRootPart")
+              or obj:FindFirstChildOfClass("BasePart")
+    end
+    if not part then return nil end
+
+    local sz = part.Size
+    local cf = part.CFrame
+    local hx, hy, hz = sz.X * 0.5, sz.Y * 0.5, sz.Z * 0.5
+
+    local corners = {
+        cf * Vector3.new( hx,  hy,  hz),
+        cf * Vector3.new(-hx,  hy,  hz),
+        cf * Vector3.new( hx, -hy,  hz),
+        cf * Vector3.new(-hx, -hy,  hz),
+        cf * Vector3.new( hx,  hy, -hz),
+        cf * Vector3.new(-hx,  hy, -hz),
+        cf * Vector3.new( hx, -hy, -hz),
+        cf * Vector3.new(-hx, -hy, -hz),
+    }
+
+    local minX, minY =  math.huge,  math.huge
+    local maxX, maxY = -math.huge, -math.huge
+    local anyOnScreen = false
+
+    for _, wPos in ipairs(corners) do
+        local sPos, onScreen = WorldToScreen(wPos)
+        if onScreen then anyOnScreen = true end
+        if sPos.X < minX then minX = sPos.X end
+        if sPos.Y < minY then minY = sPos.Y end
+        if sPos.X > maxX then maxX = sPos.X end
+        if sPos.Y > maxY then maxY = sPos.Y end
+    end
+
+    local vp = Camera.ViewportSize
+    if not anyOnScreen and (maxX < 0 or minX > vp.X or maxY < 0 or minY > vp.Y) then
+        return nil
+    end
+
+    return minX, minY, maxX, maxY, part.Position
+end
+
+-- -- HP bar colour: green (full) -> red (empty) -----------------
+local function hpColor(pct)
+    return Color3.fromRGB(
+        math.floor((1 - pct) * 255),
+        math.floor(pct       * 255),
+        0
+    )
+end
+
+-- -- Per-frame ESP render loop ----------------------------------
+local function startESPLoop()
+    if espRenderConn then return end
+
+    espRenderConn = RunService.Heartbeat:Connect(function()
+        if not ESP_ENABLED then return end
+        if not HRP         then return end
+
+        local myPos = HRP.Position
+
+        for instanceName, target in pairs(espTargets) do
+            local d = target.drawings
+
+            -- Recursive workspace search each frame
+            local found = workspace:FindFirstChild(instanceName, true)
+            if not found then hideESPDrawings(d); continue end
+
+            -- Project to screen
+            local minX, minY, maxX, maxY, worldPos = getScreenBounds(found)
+            if not minX then hideESPDrawings(d); continue end
+
+            local PAD = 5
+            local bx  = minX - PAD
+            local by  = minY - PAD
+            local bw  = (maxX - minX) + PAD * 2
+            local bh  = (maxY - minY) + PAD * 2
+
+            -- Distance (studs, 1 stud ~= 1 m in most Roblox games)
+            local dist = math.floor((worldPos - myPos).Magnitude)
+
+            -- Check for Humanoid (handles both Model and loose Part cases)
+            local humanoid
+            if found:IsA("Model") then
+                humanoid = found:FindFirstChildOfClass("Humanoid")
+            end
+            if not humanoid and found.Parent then
+                humanoid = found.Parent:FindFirstChildOfClass("Humanoid")
+            end
+
+            -- -- Box -------------------------------------------
+            d.box.Position = Vector2.new(bx, by)
+            d.box.Size     = Vector2.new(bw, bh)
+            d.box.Visible  = true
+
+            -- -- Name label (above box) ------------------------
+            d.nameText.Text     = target.displayName
+            d.nameText.Position = Vector2.new(bx + bw * 0.5, by - 17)
+            d.nameText.Visible  = true
+
+            -- -- Distance label (below box) --------------------
+            d.distText.Text     = tostring(dist) .. "m"
+            d.distText.Position = Vector2.new(bx + bw * 0.5, by + bh + 3)
+            d.distText.Visible  = true
+
+            -- -- Health bar (left side, only when Humanoid exists)
+            if humanoid and humanoid.MaxHealth > 0 then
+                local pct  = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
+                local barW = 4
+                local barX = bx - barW - 3
+
+                d.hpBarBG.Position = Vector2.new(barX, by)
+                d.hpBarBG.Size     = Vector2.new(barW, bh)
+                d.hpBarBG.Visible  = true
+
+                -- Fill is bottom-anchored so it visually drains downward
+                local fillH        = math.max(1, math.floor(bh * pct))
+                d.hpBarFG.Position = Vector2.new(barX, by + bh - fillH)
+                d.hpBarFG.Size     = Vector2.new(barW, fillH)
+                d.hpBarFG.Color    = hpColor(pct)
+                d.hpBarFG.Visible  = true
+            else
+                -- No Humanoid -> no health bar
+                d.hpBarBG.Visible = false
+                d.hpBarFG.Visible = false
+            end
+        end
+    end)
+end
+
+local function stopESPLoop()
+    if espRenderConn then
+        espRenderConn:Disconnect()
+        espRenderConn = nil
+    end
+end
+
+-- -- ESP UI sections --------------------------------------------
+local secESPCtrl = tabESP:section("esp control",    false)
+local secESPAdd  = tabESP:section("add target",     false)
+local secESPList = tabESP:section("active targets", true)
+
+-- Master toggle
+secESPCtrl:addtoggle{
+    Name     = "Enable ESP",
+    Default  = false,
+    Callback = function(v)
+        ESP_ENABLED = v
+        if v then
+            startESPLoop()
+            lib:notify("ESP ON")
+        else
+            stopESPLoop()
+            for _, t in pairs(espTargets) do hideESPDrawings(t.drawings) end
+            lib:notify("ESP OFF")
+        end
+    end,
+}
+
+-- Input fields (the .text property on textbox objects holds the current value)
+local tbInstName = secESPAdd:addtextbox{
+    Name        = "Instance Name (in Workspace)",
+    Placeholder = "e.g.  Zombie,  TreasureChest",
+    Callback    = function() end,
+}
+
+local tbDispName = secESPAdd:addtextbox{
+    Name        = "Display Label (shown on screen)",
+    Placeholder = "e.g.  Enemy  (blank = use name)",
+    Callback    = function() end,
+}
+
+-- Rebuild the active-targets list whenever the table changes
+local function rebuildList()
+    secESPList:clear()
+    local any = false
+    for key, target in pairs(espTargets) do
+        any = true
+        local row = ("[%s]  %s"):format(target.instanceName, target.displayName)
+        secESPList:addbutton{
+            Name     = "remove:  " .. row,
+            Callback = function()
+                removeESPDrawings(target.drawings)
+                espTargets[key] = nil
+                rebuildList()
+                lib:notify("Removed: " .. target.displayName)
+            end,
+        }
+    end
+    if not any then
+        secESPList:addbutton{
+            Name     = "(no active targets - add one below)",
+            Callback = function() end,
+        }
+    end
+end
+
+rebuildList()
+
+secESPAdd:addbutton{
+    Name     = "Add Target",
+    Callback = function()
+        local inst = (tbInstName.text or ""):match("^%s*(.-)%s*$")
+        local disp = (tbDispName.text or ""):match("^%s*(.-)%s*$")
+
+        if inst == "" then
+            lib:notify("Enter an instance name first")
+            return
+        end
+        if disp == "" then disp = inst end
+
+        if espTargets[inst] then
+            lib:notify("Already tracking: " .. inst)
+            return
+        end
+
+        espTargets[inst] = {
+            instanceName = inst,
+            displayName  = disp,
+            drawings     = newESPDrawings(),
+        }
+
+        rebuildList()
+        lib:notify("ESP added: " .. disp)
+    end,
+}
+
+secESPAdd:addbutton{
+    Name     = "Remove All Targets",
+    Callback = function()
+        for _, t in pairs(espTargets) do removeESPDrawings(t.drawings) end
+        espTargets = {}
+        rebuildList()
+        lib:notify("All targets removed")
+    end,
+}
+
+
+-- ===============================================================
+--  OPTIONS
+-- ===============================================================
+
+local secUISet = tabOpts:section("ui settings", false)
+local secTheme = tabOpts:section("theme",       true)
+
+secUISet:addtoggle{
+    Name     = "Watermark",
+    Default  = true,
+    Callback = function(v) lib.watermark_enabled = v end,
+}
+
+secUISet:addkeybind{
+    Name    = "Toggle UI Keybind",
+    Default = lib.closebind,
+    Changed = function(v) lib.closebind = v end,
+}
+
+secUISet:addbutton{
+    Name     = "Destroy UI",
+    Callback = function() lib.running = false end,
+}
+
+secTheme:adddropdown{
+    Name     = "Theme",
+    Options  = lib.themenames,
+    Default  = lib.theme,
+    Callback = function(v)
+        lib.theme  = v
+        lib.colors = lib.themes[v]
+    end,
+}
+
+
+-- ===============================================================
+--  MAIN LOOP  (naska requires lib:step() to be called each tick)
+-- ===============================================================
+while lib.running do
+    lib:step()
+    task.wait()
+end
+
+-- -- Cleanup on exit --------------------------------------------
+lib:Destroy()
+fly_stop()
+ac_stopLoop()
+afk_stop()
+stopESPLoop()
+for _, t in pairs(espTargets) do removeESPDrawings(t.drawings) end
