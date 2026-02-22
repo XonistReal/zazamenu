@@ -1,5 +1,5 @@
 -- ============================================================
--- ZAZA MENU v1.1.7  |  Matcha executor
+-- ZAZA MENU v1.1  |  Matcha executor
 -- Features: Auto Clicker | Anti-AFK | Fly | Custom ESP
 -- UI Library: naska.ui (embedded)
 -- Toggle UI: F2  (rebindable in the Options tab)
@@ -2998,77 +2998,80 @@ local function getDrawingSet(index)
     return espPool[index]
 end
 
--- Project object center to screen. Returns sx,sy,onScreen or nil.
--- Uses only Position (CFrame not supported in Matcha BasePart).
--- Box size is derived from the part's Size scaled by distance for
--- a rough perspective-correct feel.
-local function getScreenBounds(obj)
-    local part
-    if obj:IsA("BasePart") then
-        part = obj
-    elseif obj:IsA("Model") then
-        part = obj.PrimaryPart
-              or obj:FindFirstChild("HumanoidRootPart")
-              or obj:FindFirstChildOfClass("BasePart")
-    end
+-- Project a BasePart to a screen bounding box.
+-- Always receives a resolved BasePart (never a Model).
+-- Returns minX, minY, maxX, maxY, worldPos  or  nil if off-screen.
+local function getScreenBounds(part)
     if not part then return nil end
 
-    local pos  = part.Position
-    local sz   = part.Size
+    local pos = part.Position
+    local sz  = part.Size
 
-    -- Project the center and the top/bottom of the part
     local topPos = Vector3.new(pos.X, pos.Y + sz.Y * 0.5, pos.Z)
     local botPos = Vector3.new(pos.X, pos.Y - sz.Y * 0.5, pos.Z)
 
     local centerS, onScreen = WorldToScreen(pos)
-    if not onScreen then
-        -- still try top/bottom in case center is just off
-        local topS, topOn = WorldToScreen(topPos)
-        local botS, botOn = WorldToScreen(botPos)
-        if not topOn and not botOn then return nil end
-    end
+    local topS, topOn       = WorldToScreen(topPos)
+    local botS, botOn       = WorldToScreen(botPos)
 
-    local topS  = WorldToScreen(topPos)
-    local botS  = WorldToScreen(botPos)
-    local centerS2 = WorldToScreen(pos)
+    if not onScreen and not topOn and not botOn then return nil end
 
-    -- Pixel height from projected top to bottom
     local screenH = math.abs(botS.Y - topS.Y)
     if screenH < 4 then screenH = 4 end
 
-    -- Width ~ height * aspect ratio of the part (capped for sanity)
-    local aspect = math.clamp(sz.X / math.max(sz.Y, 0.1), 0.3, 3)
+    local aspect  = math.clamp(sz.X / math.max(sz.Y, 0.1), 0.3, 3)
     local screenW = screenH * aspect
     if screenW < 4 then screenW = 4 end
 
-    local cx = centerS2.X
-    local cy = (topS.Y + botS.Y) * 0.5
-
-    local minX = cx - screenW * 0.5
-    local maxX = cx + screenW * 0.5
+    local cx   = centerS.X
     local minY = topS.Y
     local maxY = botS.Y
-
-    -- Clamp minY/maxY if they flipped (behind camera edge case)
     if minY > maxY then minY, maxY = maxY, minY end
 
-    return minX, minY, maxX, maxY, pos
+    return cx - screenW*0.5, minY, cx + screenW*0.5, maxY, pos
 end
 
 local function hpColor(pct)
     return Color3.fromRGB(math.floor((1-pct)*255), math.floor(pct*255), 0)
 end
 
--- Helper: get position from an object for distance check
-local function getObjPos(obj)
-    if obj:IsA("BasePart") then
-        return obj.Position
-    elseif obj:IsA("Model") then
-        local r = obj:FindFirstChild("HumanoidRootPart")
-               or obj:FindFirstChildOfClass("BasePart")
-        if r then return r.Position end
+-- Recursively walk a folder and collect all renderable units.
+-- A "renderable unit" is either:
+--   - a BasePart directly in the tree
+--   - the root BasePart of a Model (HumanoidRootPart > PrimaryPart > first BasePart)
+-- Sub-folders are walked recursively. Models are NOT walked into further —
+-- we ESP the whole model as one box via its root part.
+-- Results are inserted into `out` table as { part=BasePart, name=string }.
+local function collectFromFolder(folder, out, seen)
+    for _, child in ipairs(folder:GetChildren()) do
+        if child:IsA("BasePart") then
+            if not seen[child] then
+                seen[child] = true
+                table.insert(out, { part = child, name = child.Name })
+            end
+        elseif child:IsA("Model") then
+            if not seen[child] then
+                seen[child] = true
+                -- Resolve to the model's root BasePart
+                local root = child:FindFirstChild("HumanoidRootPart")
+                          or child.PrimaryPart
+                          or child:FindFirstChildOfClass("BasePart")
+                if root then
+                    table.insert(out, { part = root, name = child.Name })
+                end
+            end
+        elseif child:IsA("Folder") or child.ClassName == "Model" then
+            -- walk sub-folders recursively
+            collectFromFolder(child, out, seen)
+        else
+            -- anything else that might be a folder-like container
+            local ok = pcall(function()
+                if #child:GetChildren() > 0 then
+                    collectFromFolder(child, out, seen)
+                end
+            end)
+        end
     end
-    return nil
 end
 
 local function startESPLoop()
@@ -3079,45 +3082,47 @@ local function startESPLoop()
 
         local myPos = HRP.Position
 
-        -- Collect candidates from both sources into one table
-        -- using a set keyed by object to avoid duplicates
-        local seen = {}
+        -- candidates: array of { part=BasePart, name=string, dist=number }
+        local seen       = {}
         local candidates = {}
 
-        -- SOURCE 1: named individual targets (recursive workspace search)
+        -- Helper: add a resolved BasePart to candidates if in range
+        local function tryAdd(part, displayName)
+            if not part or seen[part] then return end
+            seen[part] = true
+            local pos = part.Position
+            local dx,dy,dz = pos.X-myPos.X, pos.Y-myPos.Y, pos.Z-myPos.Z
+            local dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+            if dist <= ESP_MAX_DIST then
+                table.insert(candidates, { part=part, name=displayName, dist=dist })
+            end
+        end
+
+        -- SOURCE 1: named individual targets (find anywhere in workspace)
         for name, _ in pairs(espNamedTargets) do
             local obj = workspace:FindFirstChild(name, true)
-            if obj and not seen[obj] then
-                local pos = getObjPos(obj)
-                if pos then
-                    local dx,dy,dz = pos.X-myPos.X, pos.Y-myPos.Y, pos.Z-myPos.Z
-                    local dist = math.sqrt(dx*dx + dy*dy + dz*dz)
-                    if dist <= ESP_MAX_DIST then
-                        seen[obj] = true
-                        table.insert(candidates, { obj=obj, dist=dist })
-                    end
+            if obj then
+                if obj:IsA("BasePart") then
+                    tryAdd(obj, obj.Name)
+                elseif obj:IsA("Model") then
+                    local root = obj:FindFirstChild("HumanoidRootPart")
+                              or obj.PrimaryPart
+                              or obj:FindFirstChildOfClass("BasePart")
+                    tryAdd(root, obj.Name)
                 end
             end
         end
 
-        -- SOURCE 2: all tracked folders (direct children: Parts, Models)
+        -- SOURCE 2: recursive folder scan
+        local folderCollected = {}
         for folderName, _ in pairs(espFolderTargets) do
             local folder = workspace:FindFirstChild(folderName)
             if folder then
-                for _, child in ipairs(folder:GetChildren()) do
-                    if (child:IsA("BasePart") or child:IsA("Model")) and not seen[child] then
-                        local pos = getObjPos(child)
-                        if pos then
-                            local dx,dy,dz = pos.X-myPos.X, pos.Y-myPos.Y, pos.Z-myPos.Z
-                            local dist = math.sqrt(dx*dx + dy*dy + dz*dz)
-                            if dist <= ESP_MAX_DIST then
-                                seen[child] = true
-                                table.insert(candidates, { obj=child, dist=dist })
-                            end
-                        end
-                    end
-                end
+                collectFromFolder(folder, folderCollected, seen)
             end
+        end
+        for _, entry in ipairs(folderCollected) do
+            tryAdd(entry.part, entry.name)
         end
 
         -- Sort closest first, cap to max shown
@@ -3126,10 +3131,10 @@ local function startESPLoop()
 
         for i = 1, shown do
             local entry = candidates[i]
-            local obj   = entry.obj
+            local part  = entry.part
             local d     = getDrawingSet(i)
 
-            local minX,minY,maxX,maxY = getScreenBounds(obj)
+            local minX,minY,maxX,maxY = getScreenBounds(part)
             if not minX then hideESPDrawings(d); continue end
 
             local PAD = 5
@@ -3139,19 +3144,14 @@ local function startESPLoop()
             local bh  = (maxY - minY) + PAD*2
             local dist = math.floor(entry.dist)
 
-            local humanoid
-            if obj:IsA("Model") then
-                humanoid = obj:FindFirstChildOfClass("Humanoid")
-            end
-            if not humanoid and obj.Parent then
-                humanoid = obj.Parent:FindFirstChildOfClass("Humanoid")
-            end
+            -- Humanoid: check the part's parent model chain
+            local humanoid = part.Parent and part.Parent:FindFirstChildOfClass("Humanoid")
 
             d.box.Position = Vector2.new(bx, by)
             d.box.Size     = Vector2.new(bw, bh)
             d.box.Visible  = true
 
-            d.nameText.Text     = obj.Name
+            d.nameText.Text     = entry.name
             d.nameText.Position = Vector2.new(bx + bw*.5, by - 17)
             d.nameText.Visible  = true
 
